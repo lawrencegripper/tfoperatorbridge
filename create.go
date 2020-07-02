@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -81,15 +80,14 @@ func main() {
 		resources = append(resources, def)
 	}
 
-	// Get schema
-
-	for _, resource := range resources {
-		output, err := json.MarshalIndent(resource, "", "  ")
-		if err != nil {
-			panic(err)
-		}
-		fmt.Printf("Schema: %+v", string(output))
-	}
+	// Log out schemas for viewing
+	// for _, resource := range resources {
+	// 	output, err := json.MarshalIndent(resource, "", "  ")
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	fmt.Printf("Schema: %+v", string(output))
+	// }
 
 	installCRDs(resources)
 
@@ -183,12 +181,32 @@ func installCRDs(resources []spec.Schema) {
 		panic(err)
 	}
 
-	CreateCustomResourceDefinition("default", apiextensionsClientSet)
+	// Todo: loop here over the resources and install each into the cluster....
+	// for now use a dummy crd
+	crd := &apiextensionsv1beta1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      CRDName,
+			Namespace: "default",
+		},
+		Spec: apiextensionsv1beta1.CustomResourceDefinitionSpec{
+			Group:   GroupName,
+			Version: SchemeGroupVersion.Version,
+			Scope:   apiextensionsv1beta1.NamespaceScoped,
+			Names: apiextensionsv1beta1.CustomResourceDefinitionNames{
+				Plural: Plural,
+				Kind:   Kind,
+			},
+		},
+	}
+	_, err = createCustomResourceDefinition("default", apiextensionsClientSet, crd)
+	if err != nil {
+		panic(err)
+	}
 }
 
 const (
 	// GroupName is the group name used in this package.
-	GroupName string = "tfbridge"
+	GroupName string = "tfbridge.local"
 	Kind      string = "tbd"
 	// GroupVersion is the version.
 	GroupVersion string = "v1"
@@ -207,24 +225,7 @@ var (
 	// AddToScheme   = SchemeBuilder.AddToScheme
 )
 
-// CreateCustomResourceDefinition creates the CRD and add it into Kubernetes. If there is error,
-// it will do some clean up.
-func CreateCustomResourceDefinition(namespace string, clientSet apiextensionsclientset.Interface) (*apiextensionsv1beta1.CustomResourceDefinition, error) {
-	crd := &apiextensionsv1beta1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      CRDName,
-			Namespace: namespace,
-		},
-		Spec: apiextensionsv1beta1.CustomResourceDefinitionSpec{
-			Group:   GroupName,
-			Version: SchemeGroupVersion.Version,
-			Scope:   apiextensionsv1beta1.NamespaceScoped,
-			Names: apiextensionsv1beta1.CustomResourceDefinitionNames{
-				Plural: Plural,
-				Kind:   Kind,
-			},
-		},
-	}
+func createCustomResourceDefinition(namespace string, clientSet apiextensionsclientset.Interface, crd *apiextensionsv1beta1.CustomResourceDefinition) (*apiextensionsv1beta1.CustomResourceDefinition, error) {
 	_, err := clientSet.ApiextensionsV1beta1().CustomResourceDefinitions().Create(context.TODO(), crd, metav1.CreateOptions{})
 	if err == nil {
 		fmt.Println("CRD created")
