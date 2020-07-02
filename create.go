@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
@@ -40,26 +41,18 @@ func main() {
 		// Create objects for both the spec and status blocks
 		specCRD := spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Type: objType,
+				Type:     objType,
+				Required: []string{},
 			},
 		}
 		statusCRD := spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Type: objType,
+				Type:     objType,
+				Required: []string{},
 			},
 		}
 
-		for attributeName, attribute := range resource.Block.Attributes {
-
-			// Computer attributes from Terraform map to the `status` block in K8s CRDS
-			if attribute.Computed {
-				addPropertyToSchema(&statusCRD, attributeName, attribute)
-			} else {
-				// All other attributes are for the `spec` block
-				addPropertyToSchema(&specCRD, attributeName, attribute)
-
-			}
-		}
+		addBlockToSchema(&statusCRD, &specCRD, "root", resource.Block)
 
 		def := spec.Schema{}
 		def.Type = objType
@@ -81,13 +74,43 @@ func main() {
 	fmt.Printf("Schema: %+v", string(output))
 }
 
-func addPropertyToSchema(schema *spec.Schema, attributeName string, attribute *configschema.Attribute) {
+func addBlockToSchema(statusCRD, specCRD *spec.Schema, blockName string, block *configschema.Block) {
+	for attributeName, attribute := range block.Attributes {
+		// Computer attributes from Terraform map to the `status` block in K8s CRDS
+		if attribute.Computed {
+			if attribute.Required {
+				statusCRD.Required = append(statusCRD.Required, attributeName)
+			}
+			addAttributeToSchema(statusCRD, attributeName, attribute)
+		} else {
+			// All other attributes are for the `spec` block
+			if attribute.Required {
+				specCRD.Required = append(specCRD.Required, attributeName)
+			}
+			addAttributeToSchema(specCRD, attributeName, attribute)
+		}
+	}
+}
+
+func addAttributeToSchema(schema *spec.Schema, attributeName string, attribute *configschema.Attribute) {
 	var property spec.Schema
 	// Handle String property
 	if attribute.Type.Equals(cty.String) {
 		property = *spec.StringProperty()
-		property.Description = attribute.Description
+	} else if attribute.Type.Equals(cty.Bool) {
+		property = *spec.BoolProperty()
+	} else if attribute.Type.Equals(cty.Number) {
+		property = *spec.Float64Property()
+	} else if attribute.Type.IsMapType() {
+		fmt.Println("How do I map?")
+	} else if attribute.Type.IsListType() {
+		fmt.Println("How do I list?")
+	} else if attribute.Type.IsSetType() {
+		fmt.Println("How do I set?")
+	} else {
+		log.Printf("[Error] Unknown type on attribute. Skipping %v", attributeName)
 	}
+	property.Description = attribute.Description
 	// Todo Handle other types
 	if schema.Properties == nil {
 		schema.Properties = map[string]spec.Schema{}
