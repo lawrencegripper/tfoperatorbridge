@@ -67,11 +67,14 @@ func main() {
 	}
 
 	// Get schema
-	output, err := json.Marshal(resources[0])
-	if err != nil {
-		panic(err)
+
+	for _, resource := range resources {
+		output, err := json.MarshalIndent(resource, "", "  ")
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Schema: %+v", string(output))
 	}
-	fmt.Printf("Schema: %+v", string(output))
 }
 
 func addBlockToSchema(statusCRD, specCRD *spec.Schema, blockName string, block *configschema.Block) {
@@ -102,11 +105,10 @@ func addAttributeToSchema(schema *spec.Schema, attributeName string, attribute *
 	} else if attribute.Type.Equals(cty.Number) {
 		property = *spec.Float64Property()
 	} else if attribute.Type.IsMapType() {
-		fmt.Println("How do I map?")
-	} else if attribute.Type.IsListType() {
-		fmt.Println("How do I list?")
-	} else if attribute.Type.IsSetType() {
-		fmt.Println("How do I set?")
+		property = *spec.MapProperty(spec.StringProperty())
+	} else if attribute.Type.IsListType() || attribute.Type.IsSetType() {
+		// Set and List are equivalent to an Array in OpenAPI as it has no concept of set's that I can find
+		property = *spec.ArrayProperty(&spec.Schema{})
 	} else {
 		log.Printf("[Error] Unknown type on attribute. Skipping %v", attributeName)
 	}
