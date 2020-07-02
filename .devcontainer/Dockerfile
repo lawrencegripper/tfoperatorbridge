@@ -86,3 +86,15 @@ RUN \
     && curl -sSL -o /tmp/docker-downloads/terraform.zip https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip \
     && unzip /tmp/docker-downloads/terraform.zip \
     && mv terraform /usr/local/bin
+
+# Install KIND
+RUN \
+    curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.8.1/kind-$(uname)-amd64 \
+    && chmod +x ./kind \
+    && mv ./kind /usr/local/bin/kind
+
+# Install Kubectl 
+RUN \
+    curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.18.0/bin/linux/amd64/kubectl \
+    && chmod +x ./kubectl \
+    && mv ./kubectl /usr/local/bin/kubectl
