@@ -96,26 +96,42 @@ func addBlockToSchema(statusCRD, specCRD *spec.Schema, blockName string, block *
 }
 
 func addAttributeToSchema(schema *spec.Schema, attributeName string, attribute *configschema.Attribute) {
-	var property spec.Schema
-	// Handle String property
-	if attribute.Type.Equals(cty.String) {
-		property = *spec.StringProperty()
-	} else if attribute.Type.Equals(cty.Bool) {
-		property = *spec.BoolProperty()
-	} else if attribute.Type.Equals(cty.Number) {
-		property = *spec.Float64Property()
-	} else if attribute.Type.IsMapType() {
-		property = *spec.MapProperty(spec.StringProperty())
-	} else if attribute.Type.IsListType() || attribute.Type.IsSetType() {
-		// Set and List are equivalent to an Array in OpenAPI as it has no concept of set's that I can find
-		property = *spec.ArrayProperty(&spec.Schema{})
-	} else {
-		log.Printf("[Error] Unknown type on attribute. Skipping %v", attributeName)
-	}
+	property := getSchemaForType(attributeName, &attribute.Type)
 	property.Description = attribute.Description
 	// Todo Handle other types
 	if schema.Properties == nil {
 		schema.Properties = map[string]spec.Schema{}
 	}
-	schema.Properties[attributeName] = property
+	schema.Properties[attributeName] = *property
+}
+
+func getSchemaForType(name string, item *cty.Type) *spec.Schema {
+	// Bulk of mapping from TF Schema -> OpenAPI Schema here.
+	// TF Type reference: https://www.terraform.io/docs/extend/schemas/schema-types.html
+	// Open API Type reference: https://swagger.io/docs/specification/data-models/data-types/
+
+	var property *spec.Schema
+	// Handle basic types - string, bool, number
+	if item.Equals(cty.String) {
+		property = spec.StringProperty()
+	} else if item.Equals(cty.Bool) {
+		property = spec.BoolProperty()
+	} else if item.Equals(cty.Number) {
+		property = spec.Float64Property()
+
+		// Handle more complex types - map, set and list
+	} else if item.IsMapType() {
+		mapType := getSchemaForType(name+"mapType", item.MapElementType())
+		property = spec.MapProperty(mapType)
+	} else if item.IsListType() {
+		listType := getSchemaForType(name+"listType", item.ListElementType())
+		property = spec.ArrayProperty(listType)
+	} else if item.IsSetType() {
+		setType := getSchemaForType(name+"setType", item.SetElementType())
+		property = spec.ArrayProperty(setType)
+	} else {
+		log.Printf("[Error] Unknown type on attribute. Skipping %v", name)
+	}
+
+	return property
 }
