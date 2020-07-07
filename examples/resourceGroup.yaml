@@ -1,0 +1,9 @@
+apiVersion: "azurerm.tfb/v0"
+kind: resource-group
+metadata:
+  # name must match the spec fields below, and be in the form: <plural>.<group>
+  name: crontabs.stable.example.com
+  namespace: default
+spec:
+  location: northEurope
+  name: test1

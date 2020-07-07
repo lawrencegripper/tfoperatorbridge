@@ -27,6 +27,10 @@ Users should be able to deploy the bridge into their cluster with a provider sel
 - Schema Types in TF https://www.terraform.io/docs/extend/schemas/schema-types.html
 - Generate a openapi spec like this https://github.com/microsoft/azure-databricks-operator/blob/master/config/crd/bases/databricks.microsoft.com_dbfsblocks.yaml from the TF spec
 
+## Configuring provider
+
+- Think I need this somehow... unclear atm https://github.com/hashicorp/terraform/blob/3d6a321/terraform/eval_context_builtin.go#L169
+
 
 # Testing
 
