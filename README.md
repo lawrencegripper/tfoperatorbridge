@@ -13,7 +13,7 @@ This projects aims to allow any Terraform Provider to be wrapped into a K8s Oper
 
 ## Status 
 
-Currently this looks to test whether the required basic behaviour is possible and is no way functional.
+Currently this looks to test whether the required basic behaviour is possible. It is not functional.
 
 ## Aims
 
