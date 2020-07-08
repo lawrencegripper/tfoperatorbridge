@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"math/rand"
 	"os"
+	"time"
 
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
@@ -91,46 +94,79 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	rgConfigValueMap := rgSchema.Block.EmptyValue().AsValueMap()
 
 	// Config from the CRD
+	rgName := "tob" + RandomString(12)
 	rgConfigValueMap["display_name"] = cty.StringVal("test1")
 	rgConfigValueMap["location"] = cty.StringVal("westeurope")
-	rgConfigValueMap["name"] = cty.StringVal("test1")
+	rgConfigValueMap["name"] = cty.StringVal(rgName)
+
+	log.Println(fmt.Sprintf("-------------------> Testing with %q", rgName))
+
+	// Create RG
+	state1 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), []byte{})
+
+	// Update RG with tags
 	rgConfigValueMap["tags"] = cty.MapVal(map[string]cty.Value{
 		"testTag": cty.StringVal("testTagValue"),
 	})
+	state2 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), state1)
 
-	// Prior state from CRD Annotation or some store.
-	rgPriorStateValueMap := rgSchema.Block.EmptyValue().AsValueMap()
-	rgPriorStateValueMap["id"] = cty.StringVal("/subscriptions/5774ad8f-d51e-4456-a72e-0447910568d3/resourceGroups/test1")
-	rgPriorStateValueMap["display_name"] = cty.StringVal("test1")
-	rgPriorStateValueMap["location"] = cty.StringVal("westeurope")
-	rgPriorStateValueMap["name"] = cty.StringVal("test1")
+	// Delete?!? - Not working atm
+	rgConfigDelete := rgSchema.Block.EmptyValue().AsValueMap()
+	rgConfigDelete["id"] = cty.StringVal("/subscriptions/5774ad8f-d51e-4456-a72e-0447910568d3/resourceGroups/" + rgName)
+	state3 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigDelete), state2)
+
+	_ = state3
+
+	// Todo: Persist the state response from apply somewhere
+
+}
+
+func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
+
+	// TODO - take in config as ObjectVal rather than calling here
+
+	var state cty.Value
+	if len(stateSerialized) == 0 {
+		schema := provider.GetSchema().ResourceTypes[resourceName]
+		state = schema.Block.EmptyValue()
+	} else {
+		if err := state.GobDecode(stateSerialized); err != nil {
+			log.Println(err)
+			panic("Failed to decode state")
+		}
+	}
 
 	planResponse := provider.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
-		PriorState:       cty.ObjectVal(rgPriorStateValueMap), // State after last apply or empty if non-existent
-		ProposedNewState: cty.ObjectVal(rgConfigValueMap),     // Config from CRD representing desired state
-		Config:           cty.ObjectVal(rgConfigValueMap),     // Config from CRD representing desired state ? Unsure why duplicated but hey ho.
+		PriorState:       state,  // State after last apply or empty if non-existent
+		ProposedNewState: config, // Config from CRD representing desired state
+		Config:           config, // Config from CRD representing desired state ? Unsure why duplicated but hey ho.
 	})
 
 	if planResponse.Diagnostics.Err() != nil {
 		log.Println(planResponse.Diagnostics.Err().Error())
-		panic("Failed planning resourceGroup")
+		panic("Failed planning resource")
 	}
 
 	applyResponse := provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
-		TypeName:     resourceName,                        // Working theory:
-		PriorState:   cty.ObjectVal(rgPriorStateValueMap), // This is the state from the .tfstate file before the apply is made
-		Config:       cty.ObjectVal(rgConfigValueMap),     // The current HCL configuration or what would be in your terraform file
-		PlannedState: planResponse.PlannedState,           // The result of a plan (read / diff) between HCL Config and actual resource state
+		TypeName:     resourceName,              // Working theory:
+		PriorState:   state,                     // This is the state from the .tfstate file before the apply is made
+		Config:       config,                    // The current HCL configuration or what would be in your terraform file
+		PlannedState: planResponse.PlannedState, // The result of a plan (read / diff) between HCL Config and actual resource state
 	})
-
 	if applyResponse.Diagnostics.Err() != nil {
 		log.Println(applyResponse.Diagnostics.Err().Error())
 		panic("Failed applying resourceGroup")
 	}
 
-	// Todo: Persist the state response from apply somewhere
+	resultState, err := applyResponse.NewState.GobEncode()
 
+	if err != nil {
+		log.Println(err)
+		panic("Failed to encode state")
+	}
+
+	return resultState
 }
 
 func readSubscriptionDataSource(provider *plugin.GRPCProvider) {
@@ -159,4 +195,16 @@ func readSubscriptionDataSource(provider *plugin.GRPCProvider) {
 	log.Println("Read subscription data")
 	log.Println(readResp.State)
 
+}
+
+func RandomString(n int) string {
+	rand.Seed(time.Now().UnixNano())
+
+	var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+	s := make([]rune, n)
+	for i := range s {
+		s[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(s)
 }
