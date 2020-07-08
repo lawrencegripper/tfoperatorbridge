@@ -82,6 +82,39 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 		panic("Failed to configure provider")
 	}
 
+	// Example 1: Read an subscription azurerm datasource
+	// readSubscriptionDataSource(provider)
+
+	// Example 2: Create a resource group
+	resourceName := "azurerm_resource_group"
+	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
+	rgConfigValueMap := rgSchema.Block.EmptyValue().AsValueMap()
+	rgConfigValueMap["display_name"] = cty.StringVal("test1")
+	rgConfigValueMap["location"] = cty.StringVal("westeurope")
+	rgConfigValueMap["name"] = cty.StringVal("test1")
+
+	// planResponse := provider.PlanResourceChange(providers.PlanResourceChangeRequest{
+	// 	TypeName:         resourceName,
+	// 	ProposedNewState: cty.Value{},
+	// 	PriorState:       cty.Value{},
+	// 	Config:           cty.Value{},
+	// })
+
+	applyResponse := provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
+		TypeName:     resourceName,
+		Config:       cty.ObjectVal(rgConfigValueMap),
+		PlannedState: cty.ObjectVal(rgConfigValueMap),
+		PriorState:   rgSchema.Block.EmptyValue(),
+	})
+
+	if applyResponse.Diagnostics.Err() != nil {
+		log.Println(applyResponse.Diagnostics.Err().Error())
+		panic("Failed applying resourceGroup")
+	}
+
+}
+
+func readSubscriptionDataSource(provider *plugin.GRPCProvider) {
 	// Now lets use the provider to read from `azurerm_subscription` data source
 	// First lets get the Schema for the datasource.
 	subDataSourceSchema := provider.GetSchema().DataSources["azurerm_subscription"]

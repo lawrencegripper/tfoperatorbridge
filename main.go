@@ -14,7 +14,7 @@ func main() {
 	useProviderToTalkToAzure(provider)
 
 	// Example creating CRDs in K8s with correct structure based on TF Schemas
-	createCRDsForResources(provider)
+	// createCRDsForResources(provider)
 
 }
 
