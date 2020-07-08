@@ -93,38 +93,33 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
 	rgConfigValueMap := rgSchema.Block.EmptyValue().AsValueMap()
 
-	// Config from the CRD
 	rgName := "tob" + RandomString(12)
+	log.Println(fmt.Sprintf("-------------------> Testing with %q", rgName))
+
+	// Config of RG will be from the CRD
 	rgConfigValueMap["display_name"] = cty.StringVal("test1")
 	rgConfigValueMap["location"] = cty.StringVal("westeurope")
 	rgConfigValueMap["name"] = cty.StringVal(rgName)
 
-	log.Println(fmt.Sprintf("-------------------> Testing with %q", rgName))
-
-	// Create RG
+	// #1 Create RG
 	state1 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), []byte{})
 
-	// Update RG with tags
+	// #2 Update RG with tags
 	rgConfigValueMap["tags"] = cty.MapVal(map[string]cty.Value{
 		"testTag": cty.StringVal("testTagValue"),
 	})
 	state2 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), state1)
 
-	// Delete?!? - Not working atm
-	rgConfigDelete := rgSchema.Block.EmptyValue().AsValueMap()
-	rgConfigDelete["id"] = cty.StringVal("/subscriptions/5774ad8f-d51e-4456-a72e-0447910568d3/resourceGroups/" + rgName)
-	state3 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigDelete), state2)
-
-	_ = state3
+	// #3 Delete the RG
+	rgNullValueResource := cty.NullVal(rgSchema.Block.ImpliedType())
+	state3 := planAndApplyConfig(provider, resourceName, rgNullValueResource, state2)
 
 	// Todo: Persist the state response from apply somewhere
+	_ = state3
 
 }
 
 func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
-
-	// TODO - take in config as ObjectVal rather than calling here
-
 	var state cty.Value
 	if len(stateSerialized) == 0 {
 		schema := provider.GetSchema().ResourceTypes[resourceName]
