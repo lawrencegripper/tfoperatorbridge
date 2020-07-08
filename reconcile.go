@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -91,20 +92,24 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	// Example 2: Create a resource group
 	resourceName := "azurerm_resource_group"
 	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
-	rgConfigValueMap := rgSchema.Block.EmptyValue().AsValueMap()
+	// rgConfigValueMap := rgSchema.Block.EmptyValue().AsValueMap()
 
 	rgName := "tob" + RandomString(12)
 	log.Println(fmt.Sprintf("-------------------> Testing with %q", rgName))
 
-	// Config of RG will be from the CRD
-	rgConfigValueMap["display_name"] = cty.StringVal("test1")
-	rgConfigValueMap["location"] = cty.StringVal("westeurope")
-	rgConfigValueMap["name"] = cty.StringVal(rgName)
+	configValue, err := getValueFromJson(provider, resourceName, `{"name":"`+rgName+`", "location":"westeurope"}`)
+
+	if err != nil {
+		log.Println(err)
+		panic("Failed to get Value from JSON")
+	}
 
 	// #1 Create RG
-	state1 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), []byte{})
+	state1 := planAndApplyConfig(provider, resourceName, *configValue, []byte{})
+	// state1 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), []byte{})
 
 	// #2 Update RG with tags
+	rgConfigValueMap := configValue.AsValueMap()
 	rgConfigValueMap["tags"] = cty.MapVal(map[string]cty.Value{
 		"testTag": cty.StringVal("testTagValue"),
 	})
@@ -117,6 +122,38 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	// Todo: Persist the state response from apply somewhere
 	_ = state3
 
+}
+
+func getValueFromJson(provider *plugin.GRPCProvider, resourceName string, jsonString string) (*cty.Value, error) {
+	schema := provider.GetSchema().ResourceTypes[resourceName]
+
+	value := schema.Block.EmptyValue()
+	valueMap := value.AsValueMap()
+
+	// Resources need to have a display name
+	valueMap["display_name"] = cty.StringVal("the_resource")
+
+	// TODO - track the json fields that are accessed so that we can return an error if there
+	// are any that weren't visited, i.e. not defined in the schema
+
+	var jsonData map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonString), &jsonData); err != nil {
+		return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
+	}
+
+	for name, v := range schema.Block.Attributes {
+		jsonVal, gotJsonVal := jsonData[name]
+		if gotJsonVal {
+			if v.Type.Equals(cty.String) {
+				valueMap[name] = cty.StringVal(jsonVal.(string))
+			} else {
+				return nil, fmt.Errorf("Unhandled type for field %q: %v", name, v.Type)
+			}
+		}
+	}
+
+	value = cty.ObjectVal(valueMap)
+	return &value, nil
 }
 
 func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
