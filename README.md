@@ -11,7 +11,11 @@ Essentially these are all the things required to build an Operator in Kubernetes
 
 This projects aims to allow any Terraform Provider to be wrapped into a K8s Operator. 
 
-# Aims
+## Status 
+
+Currently this looks to test whether the required basic behaviour is possible and is no way functional.
+
+## Aims
 
 Users should be able to deploy the bridge into their cluster with a provider selected like "AzureRMv1.2". It should then:
 
@@ -21,18 +25,12 @@ Users should be able to deploy the bridge into their cluster with a provider sel
 3. Detect drift from desired state and correct
 
 
-# Notes
+## Testing
+
+1. Copy `.env-template` to `.env` and populate the fields with your SP/Subscription details
+1. `make run`
+
+## Notes
 
 - OpenAPI Generation in K8s https://github.com/kubernetes/kube-openapi/blob/master/pkg/generators/openapi.go
 - Schema Types in TF https://www.terraform.io/docs/extend/schemas/schema-types.html
-- Generate a openapi spec like this https://github.com/microsoft/azure-databricks-operator/blob/master/config/crd/bases/databricks.microsoft.com_dbfsblocks.yaml from the TF spec
-
-## Configuring provider
-
-- Think I need this somehow... unclear atm https://github.com/hashicorp/terraform/blob/3d6a321/terraform/eval_context_builtin.go#L169
-
-
-# Testing
-
-1. `kind create cluster`
-2. Run `create.go`
