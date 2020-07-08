@@ -97,8 +97,8 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	rgName := "tob" + RandomString(12)
 	log.Println(fmt.Sprintf("-------------------> Testing with %q", rgName))
 
-	configValue, err := getValueFromJson(provider, resourceName, `{"name":"`+rgName+`", "location":"westeurope"}`)
-
+	configValue := createEmptyResourceValue(rgSchema, "test1")
+	configValue, err := applyValuesFromJSON(rgSchema, configValue, `{"name":"`+rgName+`", "location":"westeurope"}`)
 	if err != nil {
 		log.Println(err)
 		panic("Failed to get Value from JSON")
@@ -109,11 +109,13 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	// state1 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), []byte{})
 
 	// #2 Update RG with tags
-	rgConfigValueMap := configValue.AsValueMap()
-	rgConfigValueMap["tags"] = cty.MapVal(map[string]cty.Value{
-		"testTag": cty.StringVal("testTagValue"),
-	})
-	state2 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), state1)
+	configValue = createEmptyResourceValue(rgSchema, "test1")
+	configValue, err = applyValuesFromJSON(rgSchema, configValue, `{"name":"`+rgName+`", "location":"westeurope", "tags" : {"testTag":"testTagValue2"}}`)
+	if err != nil {
+		log.Println(err)
+		panic("Failed to get Value from JSON")
+	}
+	state2 := planAndApplyConfig(provider, resourceName, *configValue, state1)
 
 	// #3 Delete the RG
 	rgNullValueResource := cty.NullVal(rgSchema.Block.ImpliedType())
@@ -124,14 +126,16 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 
 }
 
-func getValueFromJson(provider *plugin.GRPCProvider, resourceName string, jsonString string) (*cty.Value, error) {
-	schema := provider.GetSchema().ResourceTypes[resourceName]
+func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
+	emptyValue := schema.Block.EmptyValue()
+	valueMap := emptyValue.AsValueMap()
+	valueMap["display_name"] = cty.StringVal(resourceName)
+	value := cty.ObjectVal(valueMap)
+	return &value
+}
 
-	value := schema.Block.EmptyValue()
-	valueMap := value.AsValueMap()
-
-	// Resources need to have a display name
-	valueMap["display_name"] = cty.StringVal("the_resource")
+func applyValuesFromJSON(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
+	valueMap := originalValue.AsValueMap()
 
 	// TODO - track the json fields that are accessed so that we can return an error if there
 	// are any that weren't visited, i.e. not defined in the schema
@@ -141,19 +145,51 @@ func getValueFromJson(provider *plugin.GRPCProvider, resourceName string, jsonSt
 		return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
 	}
 
-	for name, v := range schema.Block.Attributes {
+	for name, attribute := range schema.Block.Attributes {
 		jsonVal, gotJsonVal := jsonData[name]
 		if gotJsonVal {
-			if v.Type.Equals(cty.String) {
-				valueMap[name] = cty.StringVal(jsonVal.(string))
-			} else {
-				return nil, fmt.Errorf("Unhandled type for field %q: %v", name, v.Type)
+			v, err := getValue(attribute.Type, jsonVal)
+			if err != nil {
+				return nil, fmt.Errorf("Error getting value for %q: %s", name, err)
 			}
+			valueMap[name] = *v
 		}
 	}
 
-	value = cty.ObjectVal(valueMap)
-	return &value, nil
+	// TODO handle schema.Block.BlockTypes
+
+	newValue := cty.ObjectVal(valueMap)
+	return &newValue, nil
+}
+
+func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
+	// TODO handle other types: bool, int, float, list, ....
+	if t.Equals(cty.String) {
+		sv, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("Invalid value '%q' - expected 'string'", value)
+		}
+		val := cty.StringVal(sv)
+		return &val, nil
+	} else if t.IsMapType() {
+		elementType := t.MapElementType()
+		mv, ok := value.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("Invalid value '%q' - expected 'map[string]interface{}'", value)
+		}
+		resultMap := map[string]cty.Value{}
+		for k, v := range mv {
+			mapValue, err := getValue(*elementType, v)
+			if err != nil {
+				return nil, fmt.Errorf("Error getting map value for property %q: %v", k, v)
+			}
+			resultMap[k] = *mapValue
+		}
+		result := cty.MapVal(resultMap)
+		return &result, nil
+	} else {
+		return nil, fmt.Errorf("Unhandled type: %v", t.GoString())
+	}
 }
 
 func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
