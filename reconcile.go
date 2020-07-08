@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
@@ -50,6 +51,7 @@ func reconcile(provider *plugin.GRPCProvider) {
 	configValueMap := configProvider.AsValueMap()
 	// On the provider config block set the `features` attribute to be a list with an instance of the features block in it.
 	configValueMap["features"] = cty.ListVal([]cty.Value{cty.ObjectVal(featuresBlockMap)})
+
 	configFull := cty.ObjectVal(configValueMap)
 
 	// Call the `PrepareProviderConfig` with the config object. This returns a version of that config with the
@@ -63,10 +65,17 @@ func reconcile(provider *plugin.GRPCProvider) {
 		panic("Failed to prepare config")
 	}
 
+	// Lets set the values we need to set while we have the value map
+	configValueMap = prepConfigResp.PreparedConfig.AsValueMap()
+	configValueMap["client_id"] = cty.StringVal(os.Getenv("ARM_CLIENT_ID"))
+	configValueMap["client_secret"] = cty.StringVal(os.Getenv("ARM_CLIENT_SECRET"))
+	configValueMap["tenant_id"] = cty.StringVal(os.Getenv("ARM_TENANT_ID"))
+	configValueMap["subscription_id"] = cty.StringVal(os.Getenv("ARM_SUBSCRIPTION_ID"))
+
 	// Now we have a prepared config we can configure the provider.
 	// Warning (again): Diagnostics houses errors, the typical go err pattern isn't followed - must check `resp.Diagnostics.Err()`
 	configureProviderResp := provider.Configure(providers.ConfigureRequest{
-		Config: prepConfigResp.PreparedConfig,
+		Config: cty.ObjectVal(configValueMap),
 	})
 	if configureProviderResp.Diagnostics.Err() != nil {
 		log.Println(configureProviderResp.Diagnostics.Err().Error())
@@ -75,17 +84,17 @@ func reconcile(provider *plugin.GRPCProvider) {
 
 	// Now in theory we can use it...
 
-	// readResp := provider.ReadDataSource(providers.ReadDataSourceRequest{
-	// 	TypeName: "azurerm_subscription",
-	// 	Config: cty.ObjectVal(map[string]cty.Value{
-	// 		"display_name": cty.StringVal("test"),
-	// 		"id":           cty.StringVal("bob"),
-	// 		"state":        cty.ObjectVal(map[string]cty.Value{}),
-	// 	}),
-	// })
+	readResp := provider.ReadDataSource(providers.ReadDataSourceRequest{
+		TypeName: "azurerm_subscription",
+		Config: cty.ObjectVal(map[string]cty.Value{
+			"display_name": cty.StringVal("test"),
+			"id":           cty.StringVal("bob"),
+			"state":        cty.ObjectVal(map[string]cty.Value{}),
+		}),
+	})
 
-	// if readResp.Diagnostics.Err() != nil {
-	// 	log.Println(readResp.Diagnostics.Err().Error())
-	// 	panic("end")
-	// }
+	if readResp.Diagnostics.Err() != nil {
+		log.Println(readResp.Diagnostics.Err().Error())
+		panic("end")
+	}
 }
