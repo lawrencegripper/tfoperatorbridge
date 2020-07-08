@@ -43,6 +43,8 @@ func main() {
 	}
 
 	provider := raw.(*plugin.GRPCProvider)
+
+	// Try and read with provider....
 	reconcile(provider)
 
 	tfSchema := provider.GetSchema()
