@@ -89,28 +89,44 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	resourceName := "azurerm_resource_group"
 	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
 	rgConfigValueMap := rgSchema.Block.EmptyValue().AsValueMap()
+
+	// Config from the CRD
 	rgConfigValueMap["display_name"] = cty.StringVal("test1")
 	rgConfigValueMap["location"] = cty.StringVal("westeurope")
 	rgConfigValueMap["name"] = cty.StringVal("test1")
 
-	// planResponse := provider.PlanResourceChange(providers.PlanResourceChangeRequest{
-	// 	TypeName:         resourceName,
-	// 	ProposedNewState: cty.Value{},
-	// 	PriorState:       cty.Value{},
-	// 	Config:           cty.Value{},
-	// })
+	// Prior state from CRD Annotation or some store.
+	rgPriorStateValueMap := rgSchema.Block.EmptyValue().AsValueMap()
+	rgPriorStateValueMap["id"] = cty.StringVal("/subscriptions/5774ad8f-d51e-4456-a72e-0447910568d3/resourceGroups/test1")
+	rgPriorStateValueMap["display_name"] = cty.StringVal("test1")
+	rgPriorStateValueMap["location"] = cty.StringVal("westeurope")
+	rgPriorStateValueMap["name"] = cty.StringVal("test1")
+
+	planResponse := provider.PlanResourceChange(providers.PlanResourceChangeRequest{
+		TypeName:         resourceName,
+		PriorState:       cty.ObjectVal(rgPriorStateValueMap),
+		ProposedNewState: cty.ObjectVal(rgConfigValueMap),
+		Config:           cty.ObjectVal(rgConfigValueMap),
+	})
+
+	if planResponse.Diagnostics.Err() != nil {
+		log.Println(planResponse.Diagnostics.Err().Error())
+		panic("Failed planning resourceGroup")
+	}
 
 	applyResponse := provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
-		TypeName:     resourceName,
-		Config:       cty.ObjectVal(rgConfigValueMap),
-		PlannedState: cty.ObjectVal(rgConfigValueMap),
-		PriorState:   rgSchema.Block.EmptyValue(),
+		TypeName:     resourceName,                        // Working theory:
+		PriorState:   cty.ObjectVal(rgPriorStateValueMap), // This is the state from the .tfstate file before the apply is made
+		Config:       cty.ObjectVal(rgConfigValueMap),     // The current HCL configuration or what would be in your terraform file
+		PlannedState: planResponse.PlannedState,           // The result of a plan (read / diff) between HCL Config and actual resource state
 	})
 
 	if applyResponse.Diagnostics.Err() != nil {
 		log.Println(applyResponse.Diagnostics.Err().Error())
 		panic("Failed applying resourceGroup")
 	}
+
+	// Todo: Persist the state response from apply somewhere
 
 }
 
