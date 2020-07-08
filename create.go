@@ -70,7 +70,7 @@ func createCRDsForResources(provider *plugin.GRPCProvider) {
 	}
 
 	// Install all of the resources as CRDs into the cluster
-	installCRDs(resources, "azurerm", fmt.Sprintf("v%v", "0.1-todo"))
+	installCRDs(resources, "azurerm", fmt.Sprintf("v%v", "alpha1"))
 
 }
 
