@@ -13,7 +13,6 @@ import (
 	"github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
 	"github.com/hashicorp/terraform/plugin"
-	"github.com/hashicorp/terraform/plugin/discovery"
 	"github.com/zclconf/go-cty/cty"
 
 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
@@ -24,34 +23,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-func main() {
-	providerName := "azurerm"
-	pluginMeta := discovery.FindPlugins(plugin.ProviderPluginName, []string{"./hack/.terraform/plugins/linux_amd64/"}).WithName(providerName)
-
-	if pluginMeta.Count() < 1 {
-		panic("no plugins found")
-	}
-	pluginClient := plugin.Client(pluginMeta.Newest())
-	rpcClient, err := pluginClient.Client()
-	if err != nil {
-		panic(fmt.Errorf("Failed to initialize plugin: %s", err))
-	}
-	// create a new resource provisioner.
-	raw, err := rpcClient.Dispense(plugin.ProviderPluginName)
-	if err != nil {
-		panic(fmt.Errorf("Failed to dispense plugin: %s", err))
-	}
-
-	provider := raw.(*plugin.GRPCProvider)
-
-	// Try and read with provider....
-	reconcile(provider)
+func createCRDsForResources(provider *plugin.GRPCProvider) {
 
 	tfSchema := provider.GetSchema()
-	// fmt.Printf("provider schemea: %+v", tfSchema)
 
 	resources := []spec.Schema{}
 	objType := spec.StringOrArray{"object"}
+
 	for resourceName, resource := range tfSchema.ResourceTypes {
 
 		// Create objects for both the spec and status blocks
@@ -91,7 +69,7 @@ func main() {
 	//  fmt.Printf("Schema: %+v", string(output))
 	// }
 
-	installCRDs(resources, providerName, fmt.Sprintf("v%v", "0.1-todo"))
+	installCRDs(resources, "azurerm", fmt.Sprintf("v%v", "0.1-todo"))
 
 }
 
@@ -122,7 +100,7 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 		err = json.Unmarshal(data, &jsonSchemaProps)
 
 		kind := strings.Replace(strings.Replace(resource.Description, "_", "-", -1), "azurerm-", "", -1)
-		groupName := providerName + ".tfb"
+		groupName := providerName + ".tfb.local"
 		plural := kind + "s"
 		version := providerVersion
 		crdName := plural + "." + groupName

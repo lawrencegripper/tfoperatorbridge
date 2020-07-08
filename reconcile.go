@@ -9,7 +9,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-func reconcile(provider *plugin.GRPCProvider) {
+func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	providerConfigBlock := provider.GetSchema().Provider.Block
 
 	// We need a set of cty.Value which maps to the schema of the provider's configuration block.
@@ -82,19 +82,29 @@ func reconcile(provider *plugin.GRPCProvider) {
 		panic("Failed to configure provider")
 	}
 
-	// Now in theory we can use it...
+	// Now lets use the provider to read from `azurerm_subscription` data source
+	// First lets get the Schema for the datasource.
+	subDataSourceSchema := provider.GetSchema().DataSources["azurerm_subscription"]
+	// Now lets get an empty value map which represents that schema with empty attributes
+	subConfigValueMap := subDataSourceSchema.Block.EmptyValue().AsValueMap()
+	// Then lets give the data source a display name as this is the only required field here.
+	// NOTE: display name is the section following the resource declaration in HCL
+	// data "azurerm_subscription" "display_name" here
+	subConfigValueMap["display_name"] = cty.StringVal("testing1")
 
+	// Then package this back up as an objectVal and submit it to the provider
 	readResp := provider.ReadDataSource(providers.ReadDataSourceRequest{
 		TypeName: "azurerm_subscription",
-		Config: cty.ObjectVal(map[string]cty.Value{
-			"display_name": cty.StringVal("test"),
-			"id":           cty.StringVal("bob"),
-			"state":        cty.ObjectVal(map[string]cty.Value{}),
-		}),
+		Config:   cty.ObjectVal(subConfigValueMap),
 	})
 
+	// Check it didn't error.
 	if readResp.Diagnostics.Err() != nil {
 		log.Println(readResp.Diagnostics.Err().Error())
-		panic("end")
+		panic("Failed reading subscription")
 	}
+
+	log.Println("Read subscription data")
+	log.Println(readResp.State)
+
 }
