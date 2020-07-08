@@ -94,6 +94,9 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	rgConfigValueMap["display_name"] = cty.StringVal("test1")
 	rgConfigValueMap["location"] = cty.StringVal("westeurope")
 	rgConfigValueMap["name"] = cty.StringVal("test1")
+	rgConfigValueMap["tags"] = cty.MapVal(map[string]cty.Value{
+		"testTag": cty.StringVal("testTagValue"),
+	})
 
 	// Prior state from CRD Annotation or some store.
 	rgPriorStateValueMap := rgSchema.Block.EmptyValue().AsValueMap()
@@ -104,9 +107,9 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 
 	planResponse := provider.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
-		PriorState:       cty.ObjectVal(rgPriorStateValueMap),
-		ProposedNewState: cty.ObjectVal(rgConfigValueMap),
-		Config:           cty.ObjectVal(rgConfigValueMap),
+		PriorState:       cty.ObjectVal(rgPriorStateValueMap), // State after last apply or empty if non-existent
+		ProposedNewState: cty.ObjectVal(rgConfigValueMap),     // Config from CRD representing desired state
+		Config:           cty.ObjectVal(rgConfigValueMap),     // Config from CRD representing desired state ? Unsure why duplicated but hey ho.
 	})
 
 	if planResponse.Diagnostics.Err() != nil {
