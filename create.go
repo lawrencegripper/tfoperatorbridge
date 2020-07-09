@@ -3,13 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
@@ -20,10 +16,6 @@ import (
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/apimachinery/pkg/util/wait"
-
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 func createCRDsForResources(provider *plugin.GRPCProvider) {
@@ -139,26 +131,8 @@ func getSchemaForType(name string, item *cty.Type) *spec.Schema {
 }
 
 // k8s stuff
-func homeDir() string {
-	if h := os.Getenv("HOME"); h != "" {
-		return h
-	}
-	return os.Getenv("USERPROFILE") // windows
-}
-
 func installCRDs(resources []spec.Schema, providerName, providerVersion string) {
-	var kubeconfig *string
-	if home := homeDir(); home != "" {
-		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
-	} else {
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-	}
-
-	// use the current context in kubeconfig
-	clientConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
-	if err != nil {
-		panic(err.Error())
-	}
+	clientConfig := getK8sClientConfig()
 
 	// create the clientset
 	apiextensionsClientSet, err := apiextensionsclientset.NewForConfig(clientConfig)
@@ -214,44 +188,6 @@ func createCustomResourceDefinition(namespace string, clientSet apiextensionscli
 		fmt.Println("CRD already exists")
 	} else {
 		fmt.Printf("Fail to create CRD: %+v\n", err)
-
-		return nil, err
-	}
-
-	// Wait for CRD creation.
-	// Todo: Not sure if this is necesssary
-	err = wait.Poll(5*time.Second, 60*time.Second, func() (bool, error) {
-		crd, err = clientSet.ApiextensionsV1beta1().CustomResourceDefinitions().Get(context.TODO(), crd.Name, metav1.GetOptions{})
-		if err != nil {
-			fmt.Printf("Fail to wait for CRD creation: %+v\n", err)
-
-			return false, err
-		}
-		for _, cond := range crd.Status.Conditions {
-			switch cond.Type {
-			case apiextensionsv1beta1.Established:
-				if cond.Status == apiextensionsv1beta1.ConditionTrue {
-					return true, err
-				}
-			case apiextensionsv1beta1.NamesAccepted:
-				if cond.Status == apiextensionsv1beta1.ConditionFalse {
-					fmt.Printf("Name conflict while wait for CRD creation: %s, %+v\n", cond.Reason, err)
-				}
-			}
-		}
-
-		return false, err
-	})
-
-	// If there is an error, delete the object to keep it clean.
-	if err != nil {
-		fmt.Println("Try to cleanup")
-		deleteErr := clientSet.ApiextensionsV1beta1().CustomResourceDefinitions().Delete(context.TODO(), crd.Name, metav1.DeleteOptions{})
-		if deleteErr != nil {
-			fmt.Printf("Fail to delete CRD: %+v\n", deleteErr)
-
-			return nil, errors.NewAggregate([]error{err, deleteErr})
-		}
 
 		return nil, err
 	}
