@@ -126,41 +126,68 @@ func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.
 }
 
 func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
-	// Example 1: Read an subscription azurerm datasource
+	// (Data Source) Example 1: Read an subscription azurerm datasource
 	// readSubscriptionDataSource(provider)
 
-	// Example 2: Create a resource group
-	resourceName := "azurerm_resource_group"
-	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
-
+	// #1 Create RG
+	rgSchema := provider.GetSchema().ResourceTypes["azurerm_resource_group"]
 	rgName := "tob" + RandomString(12)
-	log.Println(fmt.Sprintf("-------------------> Testing with %q", rgName))
+	log.Println(fmt.Sprintf("-------------------> Testing with Resource Group %q", rgName))
 
 	configValue := createEmptyResourceValue(rgSchema, "test1")
-	configValue, err := applyValuesFromJSON(rgSchema, configValue, `{"name":"`+rgName+`", "location":"westeurope"}`)
+	configValue, err := applyValuesFromJSON(rgSchema, configValue, `{
+		"name": "`+rgName+`", 
+		"location": "westeurope"
+	}`)
 	if err != nil {
 		log.Println(err)
 		panic("Failed to get Value from JSON")
 	}
 
-	// #1 Create RG
-	state1 := planAndApplyConfig(provider, resourceName, *configValue, []byte{})
+	rgState1 := planAndApplyConfig(provider, "azurerm_resource_group", *configValue, []byte{})
 
 	// #2 Update RG with tags
 	configValue = createEmptyResourceValue(rgSchema, "test1")
-	configValue, err = applyValuesFromJSON(rgSchema, configValue, `{"name":"`+rgName+`", "location":"westeurope", "tags" : {"testTag":"testTagValue2"}}`)
+	configValue, err = applyValuesFromJSON(rgSchema, configValue, `{
+		"name": "`+rgName+`", 
+		"location": "westeurope", 
+		"tags" : {
+			"testTag": "testTagValue2"
+		}
+	}`)
 	if err != nil {
 		log.Println(err)
 		panic("Failed to get Value from JSON")
 	}
-	state2 := planAndApplyConfig(provider, resourceName, *configValue, state1)
+	rgState2 := planAndApplyConfig(provider, "azurerm_resource_group", *configValue, rgState1)
 
-	// #3 Delete the RG
+	// #3 Create Storage Account
+	storageSchema := provider.GetSchema().ResourceTypes["azurerm_storage_account"]
+	storageName := strings.ToLower("tob" + RandomString(12))
+	log.Println(fmt.Sprintf("-------------------> Testing with Storage Account %q", rgName))
+
+	configValue = createEmptyResourceValue(storageSchema, "test1")
+	configValue, err = applyValuesFromJSON(storageSchema, configValue, `{
+		"name": "`+storageName+`",
+		"resource_group_name": "`+rgName+`", 
+		"location": "westeurope",
+		"account_tier": "Standard",
+		"account_replication_type": "LRS",
+		"is_hns_enabled" : false
+	}`)
+	if err != nil {
+		log.Println(err)
+		panic("Failed to get Value from JSON")
+	}
+	storageState1 := planAndApplyConfig(provider, "azurerm_storage_account", *configValue, []byte{})
+	_ = storageState1
+
+	// 4 Delete the RG
 	rgNullValueResource := cty.NullVal(rgSchema.Block.ImpliedType())
-	state3 := planAndApplyConfig(provider, resourceName, rgNullValueResource, state2)
+	rgState3 := planAndApplyConfig(provider, "azurerm_resource_group", rgNullValueResource, rgState2)
 
 	// Todo: Persist the state response from apply somewhere
-	_ = state3
+	_ = rgState3
 
 }
 
@@ -208,6 +235,13 @@ func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
 			return nil, fmt.Errorf("Invalid value '%q' - expected 'string'", value)
 		}
 		val := cty.StringVal(sv)
+		return &val, nil
+	} else if t.Equals(cty.Bool) {
+		bv, ok := value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("Invalid value '%q' - expected 'bool'", value)
+		}
+		val := cty.BoolVal(bv)
 		return &val, nil
 	} else if t.IsMapType() {
 		elementType := t.MapElementType()
