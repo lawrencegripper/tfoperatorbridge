@@ -32,18 +32,16 @@ func startSharedInformer() {
 	informer := informerGeneric.Informer()
 
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		// When a new pod gets created
+		// When a new resource gets created
 		AddFunc: func(obj interface{}) {
 
 			resource := obj.(*unstructured.Unstructured)
 
 			log.Println(resource)
-
-			// panic("not implemented")
 		},
-		// When a pod gets updated
+		// When a pod resource updated
 		UpdateFunc: func(interface{}, interface{}) { panic("not implemented") },
-		// When a pod gets deleted
+		// When a pod resource deleted
 		DeleteFunc: func(interface{}) { panic("not implemented") },
 	})
 

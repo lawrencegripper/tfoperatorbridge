@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/plugin/discovery"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
@@ -38,4 +42,28 @@ func getInstanceOfAzureRMProvider() *plugin.GRPCProvider {
 		panic(fmt.Errorf("Failed to dispense plugin: %s", err))
 	}
 	return raw.(*plugin.GRPCProvider)
+}
+
+func homeDir() string {
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
+	return os.Getenv("USERPROFILE") // windows
+}
+
+func getK8sClientConfig() *rest.Config {
+	home := homeDir()
+	kubeConfigPath := filepath.Join(home, ".kube", "config")
+
+	envKubeConfig := os.Getenv("KUBECONFIG")
+	if envKubeConfig != "" {
+		kubeConfigPath = envKubeConfig
+	}
+	// use the current context in kubeconfig
+	clientConfig, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	return clientConfig
 }
