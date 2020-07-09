@@ -92,7 +92,6 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 	// Example 2: Create a resource group
 	resourceName := "azurerm_resource_group"
 	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
-	// rgConfigValueMap := rgSchema.Block.EmptyValue().AsValueMap()
 
 	rgName := "tob" + RandomString(12)
 	log.Println(fmt.Sprintf("-------------------> Testing with %q", rgName))
@@ -106,7 +105,6 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 
 	// #1 Create RG
 	state1 := planAndApplyConfig(provider, resourceName, *configValue, []byte{})
-	// state1 := planAndApplyConfig(provider, resourceName, cty.ObjectVal(rgConfigValueMap), []byte{})
 
 	// #2 Update RG with tags
 	configValue = createEmptyResourceValue(rgSchema, "test1")
