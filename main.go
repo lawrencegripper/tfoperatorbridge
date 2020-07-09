@@ -15,13 +15,14 @@ func main() {
 	provider := getInstanceOfAzureRMProvider()
 
 	// Example talking to the Azure resources using the provider
-	useProviderToTalkToAzure(provider)
+	configureProvider(provider)
+	// exampleChangesToResourceGroup(provider)
 
 	// Example creating CRDs in K8s with correct structure based on TF Schemas
-	createCRDsForResources(provider)
+	go createCRDsForResources(provider)
 
 	// Start an informer to watch for crd items
-	startSharedInformer()
+	startSharedInformer(provider)
 }
 
 func getInstanceOfAzureRMProvider() *plugin.GRPCProvider {
