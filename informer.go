@@ -52,8 +52,15 @@ func startSharedInformer(provider *plugin.GRPCProvider) {
 		},
 		// When a pod resource updated
 		UpdateFunc: func(oldObj interface{}, newObj interface{}) {
+			oldResource := oldObj.(*unstructured.Unstructured)
+			oldGen := oldResource.GetGeneration()
 			resource := newObj.(*unstructured.Unstructured)
+			gen := resource.GetGeneration()
 			log.Printf("*** Handling Add: Namespace=%s; Kind=%s; Name=%s\n", resource.GetNamespace(), resource.GetKind(), resource.GetName())
+			if oldGen == gen {
+				log.Printf("Generation hasn't changed (%d) - skipping event\n", gen)
+				return
+			}
 			reconcileCrd(provider, resource.GetKind(), resource)
 
 			gvr := resource.GroupVersionKind().GroupVersion().WithResource(resource.GetKind() + "s") // TODO - look at a better way of getting this!
