@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,6 +124,8 @@ func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.
 	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
 
 	annotations["tfstate"] = base64.StdEncoding.EncodeToString(newState)
+	gen := crd.GetGeneration()
+	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
 	crd.SetAnnotations(annotations)
 }
 
