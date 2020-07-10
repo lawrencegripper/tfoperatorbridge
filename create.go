@@ -64,6 +64,7 @@ func createCRDsForResources(provider *plugin.GRPCProvider) {
 	// Install all of the resources as CRDs into the cluster
 	installCRDs(resources, "azurerm", fmt.Sprintf("v%v", "alpha1"))
 
+	fmt.Printf("Creating CRDs - Done")
 }
 
 // This walks the schema and adds the fields to spec/status based on whether they're computed or not.
