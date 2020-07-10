@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -110,19 +111,19 @@ func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.
 	}
 
 	// Either update or create the resource
-	var newState []byte
-	state, exists := crd.GetAnnotations()["tfstate"]
-	if exists {
-		// Updating existing object
-		newState = planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
+	var state []byte
+	annotations := crd.GetAnnotations()
+	if stateString, exists := annotations["tfstate"]; exists {
+		if state, err = base64.StdEncoding.DecodeString(stateString); err != nil {
+			panic(err)
+		}
 	} else {
-		// Creating a new object
-		newState = planAndApplyConfig(provider, resourceName, *configValue, []byte{})
+		state = []byte{}
 	}
+	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
 
-	//Todo: persist state
-	_ = newState
-
+	annotations["tfstate"] = base64.StdEncoding.EncodeToString(newState)
+	crd.SetAnnotations(annotations)
 }
 
 func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
@@ -188,7 +189,6 @@ func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 
 	// Todo: Persist the state response from apply somewhere
 	_ = rgState3
-
 }
 
 func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
