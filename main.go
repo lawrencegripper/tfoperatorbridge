@@ -19,7 +19,12 @@ func main() {
 	// exampleChangesToResourceGroup(provider)
 
 	// Example creating CRDs in K8s with correct structure based on TF Schemas
-	go createCRDsForResources(provider)
+	_, skipcreation := os.LookupEnv("SKIP_CRD_CREATION")
+	if skipcreation {
+		fmt.Println("SKIP_CRD_CREATION set - skipping CRD creation")
+	} else {
+		go createCRDsForResources(provider)
+	}
 
 	// Start an informer to watch for crd items
 	startSharedInformer(provider)
