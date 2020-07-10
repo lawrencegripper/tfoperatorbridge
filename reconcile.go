@@ -6,14 +6,16 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
 	"github.com/zclconf/go-cty/cty"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
+func configureProvider(provider *plugin.GRPCProvider) {
 	providerConfigBlock := provider.GetSchema().Provider.Block
 
 	// We need a set of cty.Value which maps to the schema of the provider's configuration block.
@@ -85,7 +87,45 @@ func useProviderToTalkToAzure(provider *plugin.GRPCProvider) {
 		log.Println(configureProviderResp.Diagnostics.Err().Error())
 		panic("Failed to configure provider")
 	}
+}
 
+func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.Unstructured) {
+	// Get the kinds terraform schema
+	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
+	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
+
+	configValue := createEmptyResourceValue(rgSchema, "test1")
+
+	// Get the spec from the CRD
+	spec := crd.Object["spec"].(map[string]interface{})
+	jsonSpecRaw, err := json.Marshal(spec)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create a TF cty.Value from the Spec JSON
+	configValue, err = applyValuesFromJSON(rgSchema, configValue, string(jsonSpecRaw))
+	if err != nil {
+		panic(err)
+	}
+
+	// Either update or create the resource
+	var newState []byte
+	state, exists := crd.GetAnnotations()["tfstate"]
+	if exists {
+		// Updating existing object
+		newState = planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
+	} else {
+		// Creating a new object
+		newState = planAndApplyConfig(provider, resourceName, *configValue, []byte{})
+	}
+
+	//Todo: persist state
+	_ = newState
+
+}
+
+func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 	// Example 1: Read an subscription azurerm datasource
 	// readSubscriptionDataSource(provider)
 

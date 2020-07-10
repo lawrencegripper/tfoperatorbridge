@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/hashicorp/terraform/plugin"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -11,12 +12,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-func startSharedInformer() {
+func startSharedInformer(provider *plugin.GRPCProvider) {
 	clientConfig := getK8sClientConfig()
 
 	clientSet, err := dynamic.NewForConfig(clientConfig)
 	if err != nil {
-		log.Panicln(err)
+		log.Println(err)
 		panic("Failed to create k8s client set")
 	}
 
@@ -34,13 +35,14 @@ func startSharedInformer() {
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		// When a new resource gets created
 		AddFunc: func(obj interface{}) {
-
 			resource := obj.(*unstructured.Unstructured)
-
-			log.Println(resource)
+			reconcileCrd(provider, resource.GetKind(), resource)
 		},
 		// When a pod resource updated
-		UpdateFunc: func(interface{}, interface{}) { panic("not implemented") },
+		UpdateFunc: func(oldObj interface{}, newObj interface{}) {
+			resource := newObj.(*unstructured.Unstructured)
+			reconcileCrd(provider, resource.GetKind(), resource)
+		},
 		// When a pod resource deleted
 		DeleteFunc: func(interface{}) { panic("not implemented") },
 	})
