@@ -181,13 +181,15 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 }
 
 func createCustomResourceDefinition(namespace string, clientSet apiextensionsclientset.Interface, crd *apiextensionsv1beta1.CustomResourceDefinition) (*apiextensionsv1beta1.CustomResourceDefinition, error) {
+	crdName := crd.ObjectMeta.Name
+	fmt.Printf("Creating CRD %q... ", crdName)
 	_, err := clientSet.ApiextensionsV1beta1().CustomResourceDefinitions().Create(context.TODO(), crd, metav1.CreateOptions{})
 	if err == nil {
-		fmt.Println("CRD created")
+		fmt.Println("created")
 	} else if apierrors.IsAlreadyExists(err) {
-		fmt.Println("CRD already exists")
+		fmt.Println("already exists")
 	} else {
-		fmt.Printf("Fail to create CRD: %+v\n", err)
+		fmt.Printf("Failed: %+v\n", err)
 
 		return nil, err
 	}
