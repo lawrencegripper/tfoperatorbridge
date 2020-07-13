@@ -92,11 +92,10 @@ func configureProvider(provider *plugin.GRPCProvider) {
 }
 
 func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.Unstructured) {
+
 	// Get the kinds terraform schema
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
 	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
-
-	configValue := createEmptyResourceValue(rgSchema, "test1")
 
 	// Get the spec from the CRD
 	spec := crd.Object["spec"].(map[string]interface{})
@@ -105,15 +104,12 @@ func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.
 		panic(err)
 	}
 
-	// Create a TF cty.Value from the Spec JSON
-	configValue, err = applyValuesFromJSON(rgSchema, configValue, string(jsonSpecRaw))
-	if err != nil {
-		panic(err)
-	}
-
-	// Either update or create the resource
+	// Get any saved state
 	var state []byte
 	annotations := crd.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
 	if stateString, exists := annotations["tfstate"]; exists {
 		if state, err = base64.StdEncoding.DecodeString(stateString); err != nil {
 			panic(err)
@@ -121,12 +117,66 @@ func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.
 	} else {
 		state = []byte{}
 	}
+
+	var configValue *cty.Value
+
+	deleting := false
+	metadata, gotMetadata := crd.Object["metadata"].(map[string]interface{})
+	if gotMetadata {
+		if _, deleting = metadata["deletionTimestamp"]; deleting {
+			// Deleting, so set a NullVal for the config
+			v := cty.NullVal(rgSchema.Block.ImpliedType())
+			configValue = &v
+		}
+	} else {
+		metadata = map[string]interface{}{}
+	}
+	finalizers, gotFinalizers := metadata["finalizers"].([]string)
+	if !gotFinalizers {
+		finalizers = []string{}
+	}
+	gotCRDFinalizer := false
+	for _, f := range finalizers {
+		if f == "tfoperatorbridge.local" {
+			gotCRDFinalizer = true
+			break
+		}
+	}
+	if !gotCRDFinalizer {
+		log.Println("Adding finalizer")
+		finalizers = append(finalizers, "tfoperatorbridge.local")
+		metadata["finalizers"] = finalizers
+	}
+	if configValue == nil {
+		// Create a TF cty.Value from the Spec JSON
+		configValue = createEmptyResourceValue(rgSchema, "test1")
+		configValue, err = applyValuesFromJSON(rgSchema, configValue, string(jsonSpecRaw))
+		if err != nil {
+			panic(err)
+		}
+	}
+
 	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
 
 	annotations["tfstate"] = base64.StdEncoding.EncodeToString(newState)
 	gen := crd.GetGeneration()
 	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
 	crd.SetAnnotations(annotations)
+	crd.Object["status"] = map[string]interface{}{
+		"id": "testing",
+	}
+
+	if deleting {
+		updatedFinalizers := []string{}
+		for _, f := range finalizers {
+			if f == "tfoperatorbridge.local" {
+				log.Println("Removing finalizer")
+			} else {
+				updatedFinalizers = append(updatedFinalizers, f)
+			}
+		}
+		metadata["finalizers"] = updatedFinalizers
+	}
 }
 
 func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {

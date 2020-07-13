@@ -100,10 +100,9 @@ func startSharedInformer(provider *plugin.GRPCProvider) {
 			_ = newResource
 		},
 		// When a pod resource deleted
-		DeleteFunc: func(interface{}) { panic("not implemented") },
+		// DeleteFunc: func(interface{}) { panic("not implemented") },
 	})
 
 	stopCh := make(chan struct{}, 1)
 	informer.Run(stopCh)
-
 }
