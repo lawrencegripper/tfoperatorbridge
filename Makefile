@@ -8,3 +8,7 @@ kind-create:
 
 terraform-hack-init:
 	./hack/init.sh
+
+integration-tests:
+	# TODO automatically run the operator
+	ginkgo --progress
