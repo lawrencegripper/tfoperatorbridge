@@ -1,8 +1,10 @@
 
-run: kind-create
+run: kind-create terraform-hack-init
 	go run .
 
 kind-create:
 	@echo "Create cluster if doesn't exist"
-	-kind create cluster --name tob
-	kind export kubeconfig --name tob
+	./scripts/init-kind-cluster.sh
+
+terraform-hack-init:
+	./hack/init.sh

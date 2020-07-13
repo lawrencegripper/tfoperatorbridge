@@ -1,0 +1,10 @@
+# initial tfbtest1 definition
+apiVersion: azurerm.tfb.local/valpha1
+kind: resource-group
+metadata:
+  name: test1
+spec:
+  name: tfbtest1
+  location: westeurope
+  tags:
+    tag1: Value1
