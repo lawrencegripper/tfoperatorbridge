@@ -23,7 +23,7 @@ func main() {
 	if skipcreation {
 		fmt.Println("SKIP_CRD_CREATION set - skipping CRD creation")
 	} else {
-		go createCRDsForResources(provider)
+		createCRDsForResources(provider)
 	}
 
 	// Start an informer to watch for crd items
