@@ -45,7 +45,7 @@ func startSharedInformer(provider *plugin.GRPCProvider) {
 				return
 			}
 
-			reconcileCrd(provider, resource.GetKind(), resource)
+			reconcileCrd(provider, resource)
 
 			_, err := saveResource(clientSet, resource)
 			if err != nil {
@@ -64,7 +64,7 @@ func startSharedInformer(provider *plugin.GRPCProvider) {
 				return
 			}
 
-			reconcileCrd(provider, resource.GetKind(), resource)
+			reconcileCrd(provider, resource)
 
 			_, err := saveResource(clientSet, resource)
 			if err != nil {

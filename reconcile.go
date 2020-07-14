@@ -91,9 +91,10 @@ func configureProvider(provider *plugin.GRPCProvider) {
 	}
 }
 
-func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.Unstructured) {
+func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured) {
 
 	// Get the kinds terraform schema
+	kind := crd.GetKind()
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
 	schema := provider.GetSchema().ResourceTypes[resourceName]
 
