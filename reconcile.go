@@ -95,90 +95,129 @@ func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.
 
 	// Get the kinds terraform schema
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
-	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
+	schema := provider.GetSchema().ResourceTypes[resourceName]
 
-	// Get the spec from the CRD
-	spec := crd.Object["spec"].(map[string]interface{})
-	jsonSpecRaw, err := json.Marshal(spec)
+	var configValue *cty.Value
+	var deleting bool
+	if deleting = isDeleting(crd); deleting {
+		// Deleting, so set a NullVal for the config
+		v := cty.NullVal(schema.Block.ImpliedType())
+		configValue = &v
+	} else {
+		ensureFinalizer(crd)
+
+		// Get the spec from the CRD
+		spec := crd.Object["spec"].(map[string]interface{})
+		jsonSpecRaw, err := json.Marshal(spec)
+		if err != nil {
+			panic(err)
+		}
+
+		// Create a TF cty.Value from the Spec JSON
+		configValue = createEmptyResourceValue(schema, "test1")
+		configValue, err = applyValuesFromJSON(schema, configValue, string(jsonSpecRaw))
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	state, err := getTfState(crd)
 	if err != nil {
 		panic(err)
 	}
+	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
 
-	// Get any saved state
-	var state []byte
-	annotations := crd.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	if stateString, exists := annotations["tfstate"]; exists {
-		if state, err = base64.StdEncoding.DecodeString(stateString); err != nil {
-			panic(err)
-		}
-	} else {
-		state = []byte{}
+	saveTfState(crd, newState)
+	saveLastAppliedGeneration(crd)
+
+	crd.Object["status"] = map[string]interface{}{
+		"id": "testing",
 	}
 
-	var configValue *cty.Value
+	if deleting {
+		removeFinalizer(crd)
+	}
+}
 
+func isDeleting(resource *unstructured.Unstructured) bool {
 	deleting := false
-	metadata, gotMetadata := crd.Object["metadata"].(map[string]interface{})
+	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
 	if gotMetadata {
 		if _, deleting = metadata["deletionTimestamp"]; deleting {
-			// Deleting, so set a NullVal for the config
-			v := cty.NullVal(rgSchema.Block.ImpliedType())
-			configValue = &v
+			return true
 		}
-	} else {
+	}
+	return false
+}
+func ensureFinalizer(resource *unstructured.Unstructured) {
+	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
+	if !gotMetadata {
 		metadata = map[string]interface{}{}
 	}
 	finalizers, gotFinalizers := metadata["finalizers"].([]string)
 	if !gotFinalizers {
 		finalizers = []string{}
 	}
-	gotCRDFinalizer := false
 	for _, f := range finalizers {
 		if f == "tfoperatorbridge.local" {
-			gotCRDFinalizer = true
-			break
+			// already present
+			return
 		}
 	}
-	if !gotCRDFinalizer {
-		log.Println("Adding finalizer")
-		finalizers = append(finalizers, "tfoperatorbridge.local")
-		metadata["finalizers"] = finalizers
-	}
-	if configValue == nil {
-		// Create a TF cty.Value from the Spec JSON
-		configValue = createEmptyResourceValue(rgSchema, "test1")
-		configValue, err = applyValuesFromJSON(rgSchema, configValue, string(jsonSpecRaw))
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
-
-	annotations["tfstate"] = base64.StdEncoding.EncodeToString(newState)
-	gen := crd.GetGeneration()
-	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
-	crd.SetAnnotations(annotations)
-	crd.Object["status"] = map[string]interface{}{
-		"id": "testing",
-	}
-
-	if deleting {
-		updatedFinalizers := []string{}
-		for _, f := range finalizers {
-			if f == "tfoperatorbridge.local" {
-				log.Println("Removing finalizer")
-			} else {
-				updatedFinalizers = append(updatedFinalizers, f)
-			}
-		}
-		metadata["finalizers"] = updatedFinalizers
-	}
+	finalizers = append(finalizers, "tfoperatorbridge.local")
+	metadata["finalizers"] = finalizers
+	resource.Object["metadata"] = metadata
 }
-
+func removeFinalizer(resource *unstructured.Unstructured) {
+	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
+	if !gotMetadata {
+		metadata = map[string]interface{}{}
+	}
+	finalizers, gotFinalizers := metadata["finalizers"].([]string)
+	if !gotFinalizers {
+		finalizers = []string{}
+	}
+	updatedFinalizers := []string{}
+	for _, f := range finalizers {
+		if f == "tfoperatorbridge.local" {
+			log.Println("Removing finalizer")
+		} else {
+			updatedFinalizers = append(updatedFinalizers, f)
+		}
+	}
+	metadata["finalizers"] = updatedFinalizers
+	resource.Object["metadata"] = metadata
+}
+func getTfState(resource *unstructured.Unstructured) ([]byte, error) {
+	annotations := resource.GetAnnotations()
+	if annotations != nil {
+		if stateString, exists := annotations["tfstate"]; exists {
+			state, err := base64.StdEncoding.DecodeString(stateString)
+			if err != nil {
+				return []byte{}, err
+			}
+			return state, nil
+		}
+	}
+	return []byte{}, nil
+}
+func saveTfState(resource *unstructured.Unstructured, state []byte) {
+	annotations := resource.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations["tfstate"] = base64.StdEncoding.EncodeToString(state)
+	resource.SetAnnotations(annotations)
+}
+func saveLastAppliedGeneration(resource *unstructured.Unstructured) {
+	gen := resource.GetGeneration()
+	annotations := resource.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
+	resource.SetAnnotations(annotations)
+}
 func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 	// (Data Source) Example 1: Read an subscription azurerm datasource
 	// readSubscriptionDataSource(provider)
