@@ -91,44 +91,145 @@ func configureProvider(provider *plugin.GRPCProvider) {
 	}
 }
 
-func reconcileCrd(provider *plugin.GRPCProvider, kind string, crd *unstructured.Unstructured) {
+func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured) {
+
 	// Get the kinds terraform schema
+	kind := crd.GetKind()
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
-	rgSchema := provider.GetSchema().ResourceTypes[resourceName]
+	schema := provider.GetSchema().ResourceTypes[resourceName]
 
-	configValue := createEmptyResourceValue(rgSchema, "test1")
+	var configValue *cty.Value
+	var deleting bool
+	if deleting = isDeleting(crd); deleting {
+		// Deleting, so set a NullVal for the config
+		v := cty.NullVal(schema.Block.ImpliedType())
+		configValue = &v
+	} else {
+		ensureFinalizer(crd)
 
-	// Get the spec from the CRD
-	spec := crd.Object["spec"].(map[string]interface{})
-	jsonSpecRaw, err := json.Marshal(spec)
-	if err != nil {
-		panic(err)
-	}
-
-	// Create a TF cty.Value from the Spec JSON
-	configValue, err = applyValuesFromJSON(rgSchema, configValue, string(jsonSpecRaw))
-	if err != nil {
-		panic(err)
-	}
-
-	// Either update or create the resource
-	var state []byte
-	annotations := crd.GetAnnotations()
-	if stateString, exists := annotations["tfstate"]; exists {
-		if state, err = base64.StdEncoding.DecodeString(stateString); err != nil {
+		// Get the spec from the CRD
+		spec := crd.Object["spec"].(map[string]interface{})
+		jsonSpecRaw, err := json.Marshal(spec)
+		if err != nil {
 			panic(err)
 		}
-	} else {
-		state = []byte{}
+
+		// Create a TF cty.Value from the Spec JSON
+		configValue = createEmptyResourceValue(schema, "test1")
+		configValue, err = applyValuesFromJSON(schema, configValue, string(jsonSpecRaw))
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	state, err := getTfState(crd)
+	if err != nil {
+		panic(err)
 	}
 	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
 
-	annotations["tfstate"] = base64.StdEncoding.EncodeToString(newState)
-	gen := crd.GetGeneration()
-	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
-	crd.SetAnnotations(annotations)
+	if err := saveTfState(crd, newState); err != nil {
+		if err != nil {
+			panic(err)
+		}
+	}
+	saveLastAppliedGeneration(crd)
+
+	if deleting {
+		removeFinalizer(crd)
+	} else {
+		// TODO - perform mapping of newState onto the CRD Status (currently hacking ID in for testing)
+		newStateMap := newState.AsValueMap()
+		crd.Object["status"] = map[string]interface{}{
+			"id": newStateMap["id"].AsString(),
+		}
+	}
 }
 
+func isDeleting(resource *unstructured.Unstructured) bool {
+	deleting := false
+	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
+	if gotMetadata {
+		if _, deleting = metadata["deletionTimestamp"]; deleting {
+			return true
+		}
+	}
+	return false
+}
+func ensureFinalizer(resource *unstructured.Unstructured) {
+	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
+	if !gotMetadata {
+		metadata = map[string]interface{}{}
+	}
+	finalizers, gotFinalizers := metadata["finalizers"].([]string)
+	if !gotFinalizers {
+		finalizers = []string{}
+	}
+	for _, f := range finalizers {
+		if f == "tfoperatorbridge.local" {
+			// already present
+			return
+		}
+	}
+	finalizers = append(finalizers, "tfoperatorbridge.local")
+	metadata["finalizers"] = finalizers
+	resource.Object["metadata"] = metadata
+}
+func removeFinalizer(resource *unstructured.Unstructured) {
+	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
+	if !gotMetadata {
+		metadata = map[string]interface{}{}
+	}
+	finalizers, gotFinalizers := metadata["finalizers"].([]string)
+	if !gotFinalizers {
+		finalizers = []string{}
+	}
+	updatedFinalizers := []string{}
+	for _, f := range finalizers {
+		if f == "tfoperatorbridge.local" {
+			log.Println("Removing finalizer")
+		} else {
+			updatedFinalizers = append(updatedFinalizers, f)
+		}
+	}
+	metadata["finalizers"] = updatedFinalizers
+	resource.Object["metadata"] = metadata
+}
+func getTfState(resource *unstructured.Unstructured) ([]byte, error) {
+	annotations := resource.GetAnnotations()
+	if annotations != nil {
+		if stateString, exists := annotations["tfstate"]; exists {
+			state, err := base64.StdEncoding.DecodeString(stateString)
+			if err != nil {
+				return []byte{}, err
+			}
+			return state, nil
+		}
+	}
+	return []byte{}, nil
+}
+func saveTfState(resource *unstructured.Unstructured, state *cty.Value) error {
+	serializedState, err := state.GobEncode()
+	if err != nil {
+		return err
+	}
+	annotations := resource.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations["tfstate"] = base64.StdEncoding.EncodeToString(serializedState)
+	resource.SetAnnotations(annotations)
+	return nil
+}
+func saveLastAppliedGeneration(resource *unstructured.Unstructured) {
+	gen := resource.GetGeneration()
+	annotations := resource.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
+	resource.SetAnnotations(annotations)
+}
 func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 	// (Data Source) Example 1: Read an subscription azurerm datasource
 	// readSubscriptionDataSource(provider)
@@ -148,7 +249,7 @@ func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 		panic("Failed to get Value from JSON")
 	}
 
-	rgState1 := planAndApplyConfig(provider, "azurerm_resource_group", *configValue, []byte{})
+	rgState1 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", *configValue, []byte{})
 
 	// #2 Update RG with tags
 	configValue = createEmptyResourceValue(rgSchema, "test1")
@@ -163,7 +264,7 @@ func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 		log.Println(err)
 		panic("Failed to get Value from JSON")
 	}
-	rgState2 := planAndApplyConfig(provider, "azurerm_resource_group", *configValue, rgState1)
+	rgState2 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", *configValue, rgState1)
 
 	// #3 Create Storage Account
 	storageSchema := provider.GetSchema().ResourceTypes["azurerm_storage_account"]
@@ -183,12 +284,12 @@ func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 		log.Println(err)
 		panic("Failed to get Value from JSON")
 	}
-	storageState1 := planAndApplyConfig(provider, "azurerm_storage_account", *configValue, []byte{})
+	storageState1 := planAndApplyConfigAndEncodeState(provider, "azurerm_storage_account", *configValue, []byte{})
 	_ = storageState1
 
 	// 4 Delete the RG
 	rgNullValueResource := cty.NullVal(rgSchema.Block.ImpliedType())
-	rgState3 := planAndApplyConfig(provider, "azurerm_resource_group", rgNullValueResource, rgState2)
+	rgState3 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", rgNullValueResource, rgState2)
 
 	// Todo: Persist the state response from apply somewhere
 	_ = rgState3
@@ -267,7 +368,17 @@ func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
 	}
 }
 
-func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
+func planAndApplyConfigAndEncodeState(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
+	resultState := planAndApplyConfig(provider, resourceName, config, stateSerialized)
+	serializedState, err := resultState.GobEncode()
+	if err != nil {
+		log.Println(err)
+		panic("Failed to encode state")
+	}
+	return serializedState
+}
+
+func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) *cty.Value {
 	var state cty.Value
 	if len(stateSerialized) == 0 {
 		schema := provider.GetSchema().ResourceTypes[resourceName]
@@ -302,14 +413,7 @@ func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, conf
 		panic("Failed applying resourceGroup")
 	}
 
-	resultState, err := applyResponse.NewState.GobEncode()
-
-	if err != nil {
-		log.Println(err)
-		panic("Failed to encode state")
-	}
-
-	return resultState
+	return &applyResponse.NewState
 }
 
 func readSubscriptionDataSource(provider *plugin.GRPCProvider) {

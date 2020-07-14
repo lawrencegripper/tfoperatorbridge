@@ -40,70 +40,81 @@ func startSharedInformer(provider *plugin.GRPCProvider) {
 		AddFunc: func(obj interface{}) {
 			resource := obj.(*unstructured.Unstructured)
 			gen := resource.GetGeneration()
-			annotations := resource.GetAnnotations()
 			log.Printf("*** Handling Add: Namespace=%s; Kind=%s; Name=%s (Generation=%d)\n", resource.GetNamespace(), resource.GetKind(), resource.GetName(), gen)
-
-			var lastAppliedGeneration int
-			var err error
-			if annotations["lastAppliedGeneration"] != "" {
-				lastAppliedGeneration, err = strconv.Atoi(annotations["lastAppliedGeneration"])
-			}
-			if lastAppliedGeneration == int(gen) {
-				log.Printf("Generation matches LastAppliedGeneration (%d) - skipping event\n", gen)
+			if !generationHasChanged(resource, nil) {
 				return
 			}
 
-			reconcileCrd(provider, resource.GetKind(), resource)
+			reconcileCrd(provider, resource)
 
-			gvr := resource.GroupVersionKind().GroupVersion().WithResource(resource.GetKind() + "s") // TODO - look at a better way of getting this!
-			options := v1.UpdateOptions{}
-
-			newResource, err := clientSet.Resource(gvr).Namespace(resource.GetNamespace()).Update(context.TODO(), resource, options)
+			_, err := saveResource(clientSet, resource)
 			if err != nil {
 				log.Println(err)
-				panic("Error updating CRD instance (Add)")
+				panic("Error updating CRD instance (Add)") // TODO handle retries
 			}
-			_ = newResource
 		},
-		// When a pod resource updated
+		// When a pod resource updated or marked for deletion
 		UpdateFunc: func(oldObj interface{}, newObj interface{}) {
 			oldResource := oldObj.(*unstructured.Unstructured)
-			oldGen := oldResource.GetGeneration()
 			resource := newObj.(*unstructured.Unstructured)
 			gen := resource.GetGeneration()
-			log.Printf("*** Handling Add: Namespace=%s; Kind=%s; Name=%s (Generation=%d)\n", resource.GetNamespace(), resource.GetKind(), resource.GetName(), gen)
-			if oldGen == gen {
-				log.Printf("Generation hasn't changed (%d) - skipping event\n", gen)
+
+			log.Printf("*** Handling Update: Namespace=%s; Kind=%s; Name=%s (Generation=%d)\n", resource.GetNamespace(), resource.GetKind(), resource.GetName(), gen)
+			if !generationHasChanged(resource, oldResource) {
 				return
 			}
 
-			// TODO - clean up repeated code!
-			var lastAppliedGeneration int
-			var err error
-			annotations := resource.GetAnnotations()
-			if annotations["lastAppliedGeneration"] != "" {
-				lastAppliedGeneration, err = strconv.Atoi(annotations["lastAppliedGeneration"])
-			}
-			if lastAppliedGeneration == int(gen) {
-				log.Printf("Generation matches LastAppliedGeneration (%d) - skipping event\n", gen)
-				return
-			}
-			reconcileCrd(provider, resource.GetKind(), resource)
+			reconcileCrd(provider, resource)
 
-			gvr := resource.GroupVersionKind().GroupVersion().WithResource(resource.GetKind() + "s") // TODO - look at a better way of getting this!
-			options := v1.UpdateOptions{}
-			newResource, err := clientSet.Resource(gvr).Namespace(resource.GetNamespace()).Update(context.TODO(), resource, options)
+			_, err := saveResource(clientSet, resource)
 			if err != nil {
 				log.Println(err)
-				panic("Error updating CRD instance (Update)")
+				panic("Error updating CRD instance (Update)") // TODO handle retries
 			}
-			_ = newResource
 		},
-		// When a pod resource deleted
-		DeleteFunc: func(interface{}) { panic("not implemented") },
+		// Not currently using delete as we add a finalizer so deletes are signalled via updates with a deletion timestamp
+		// DeleteFunc: func(interface{}) { panic("not implemented") },
 	})
 
 	stopCh := make(chan struct{}, 1)
 	informer.Run(stopCh)
+}
 
+func generationHasChanged(currentResource *unstructured.Unstructured, oldResource *unstructured.Unstructured) bool {
+	currentGeneration := currentResource.GetGeneration()
+
+	if oldResource != nil {
+		oldGeneration := oldResource.GetGeneration()
+		if oldGeneration == currentGeneration {
+			log.Printf("Generation hasn't changed (%d) - skipping event\n", currentGeneration)
+			return false
+		}
+	}
+
+	var lastAppliedGeneration int
+	var err error
+	annotations := currentResource.GetAnnotations()
+	if s := annotations["lastAppliedGeneration"]; s != "" {
+		lastAppliedGeneration, err = strconv.Atoi(s)
+		if err != nil {
+			log.Printf("Unable to parse lastAppliedGeneration %q: %s", s, err)
+			return true
+		}
+	}
+	if lastAppliedGeneration == int(currentGeneration) {
+		log.Printf("Generation matches LastAppliedGeneration (%d) - skipping event\n", currentGeneration)
+		return false
+	}
+
+	return true
+}
+
+func saveResource(clientSet dynamic.Interface, resource *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	gvr := resource.GroupVersionKind().GroupVersion().WithResource(resource.GetKind() + "s") // TODO - look at a better way of getting this!
+	options := v1.UpdateOptions{}
+	newResource, err := clientSet.Resource(gvr).Namespace(resource.GetNamespace()).Update(context.TODO(), resource, options)
+	if err != nil {
+		return nil, err
+	}
+	return newResource, nil
 }
