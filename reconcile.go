@@ -128,15 +128,21 @@ func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured)
 	}
 	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
 
-	saveTfState(crd, newState)
-	saveLastAppliedGeneration(crd)
-
-	crd.Object["status"] = map[string]interface{}{
-		"id": "testing",
+	if err := saveTfState(crd, newState); err != nil {
+		if err != nil {
+			panic(err)
+		}
 	}
+	saveLastAppliedGeneration(crd)
 
 	if deleting {
 		removeFinalizer(crd)
+	} else {
+		// TODO - perform mapping of newState onto the CRD Status (currently hacking ID in for testing)
+		newStateMap := newState.AsValueMap()
+		crd.Object["status"] = map[string]interface{}{
+			"id": newStateMap["id"].AsString(),
+		}
 	}
 }
 
@@ -202,13 +208,18 @@ func getTfState(resource *unstructured.Unstructured) ([]byte, error) {
 	}
 	return []byte{}, nil
 }
-func saveTfState(resource *unstructured.Unstructured, state []byte) {
+func saveTfState(resource *unstructured.Unstructured, state *cty.Value) error {
+	serializedState, err := state.GobEncode()
+	if err != nil {
+		return err
+	}
 	annotations := resource.GetAnnotations()
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
-	annotations["tfstate"] = base64.StdEncoding.EncodeToString(state)
+	annotations["tfstate"] = base64.StdEncoding.EncodeToString(serializedState)
 	resource.SetAnnotations(annotations)
+	return nil
 }
 func saveLastAppliedGeneration(resource *unstructured.Unstructured) {
 	gen := resource.GetGeneration()
@@ -238,7 +249,7 @@ func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 		panic("Failed to get Value from JSON")
 	}
 
-	rgState1 := planAndApplyConfig(provider, "azurerm_resource_group", *configValue, []byte{})
+	rgState1 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", *configValue, []byte{})
 
 	// #2 Update RG with tags
 	configValue = createEmptyResourceValue(rgSchema, "test1")
@@ -253,7 +264,7 @@ func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 		log.Println(err)
 		panic("Failed to get Value from JSON")
 	}
-	rgState2 := planAndApplyConfig(provider, "azurerm_resource_group", *configValue, rgState1)
+	rgState2 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", *configValue, rgState1)
 
 	// #3 Create Storage Account
 	storageSchema := provider.GetSchema().ResourceTypes["azurerm_storage_account"]
@@ -273,12 +284,12 @@ func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
 		log.Println(err)
 		panic("Failed to get Value from JSON")
 	}
-	storageState1 := planAndApplyConfig(provider, "azurerm_storage_account", *configValue, []byte{})
+	storageState1 := planAndApplyConfigAndEncodeState(provider, "azurerm_storage_account", *configValue, []byte{})
 	_ = storageState1
 
 	// 4 Delete the RG
 	rgNullValueResource := cty.NullVal(rgSchema.Block.ImpliedType())
-	rgState3 := planAndApplyConfig(provider, "azurerm_resource_group", rgNullValueResource, rgState2)
+	rgState3 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", rgNullValueResource, rgState2)
 
 	// Todo: Persist the state response from apply somewhere
 	_ = rgState3
@@ -357,7 +368,17 @@ func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
 	}
 }
 
-func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
+func planAndApplyConfigAndEncodeState(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
+	resultState := planAndApplyConfig(provider, resourceName, config, stateSerialized)
+	serializedState, err := resultState.GobEncode()
+	if err != nil {
+		log.Println(err)
+		panic("Failed to encode state")
+	}
+	return serializedState
+}
+
+func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) *cty.Value {
 	var state cty.Value
 	if len(stateSerialized) == 0 {
 		schema := provider.GetSchema().ResourceTypes[resourceName]
@@ -392,14 +413,7 @@ func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, conf
 		panic("Failed applying resourceGroup")
 	}
 
-	resultState, err := applyResponse.NewState.GobEncode()
-
-	if err != nil {
-		log.Println(err)
-		panic("Failed to encode state")
-	}
-
-	return resultState
+	return &applyResponse.NewState
 }
 
 func readSubscriptionDataSource(provider *plugin.GRPCProvider) {
