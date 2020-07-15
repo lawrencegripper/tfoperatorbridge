@@ -1,0 +1,12 @@
+apiVersion: azurerm.tfb.local/valpha1
+kind: storage-account
+metadata:
+  # name must match the spec fields below, and be in the form: <plural>.<group>
+  name: teststorage
+  namespace: default
+spec:
+  location: northEurope
+  name: test14tfbop
+  resource_group_name: test1
+  account_tier: Standard
+  account_replication_type: LRS

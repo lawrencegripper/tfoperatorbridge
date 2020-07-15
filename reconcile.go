@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
 	"github.com/zclconf/go-cty/cty"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -209,7 +210,7 @@ func getTfState(resource *unstructured.Unstructured) ([]byte, error) {
 	return []byte{}, nil
 }
 func saveTfState(resource *unstructured.Unstructured, state *cty.Value) error {
-	serializedState, err := state.GobEncode()
+	serializedState, err := ctyjson.Marshal(*state, state.Type())
 	if err != nil {
 		return err
 	}
@@ -379,15 +380,17 @@ func planAndApplyConfigAndEncodeState(provider *plugin.GRPCProvider, resourceNam
 }
 
 func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) *cty.Value {
+	schema := provider.GetSchema().ResourceTypes[resourceName]
 	var state cty.Value
 	if len(stateSerialized) == 0 {
-		schema := provider.GetSchema().ResourceTypes[resourceName]
 		state = schema.Block.EmptyValue()
 	} else {
-		if err := state.GobDecode(stateSerialized); err != nil {
+		unmashaledState, err := ctyjson.Unmarshal(stateSerialized, schema.Block.ImpliedType())
+		if err != nil {
 			log.Println(err)
 			panic("Failed to decode state")
 		}
+		state = unmashaledState
 	}
 
 	planResponse := provider.PlanResourceChange(providers.PlanResourceChangeRequest{
