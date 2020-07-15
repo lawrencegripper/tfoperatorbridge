@@ -47,23 +47,19 @@ var _ = Describe("When working with a resource group", func() {
 		Expect(err).To(BeNil())
 
 		By("returning the resource ID")
-		Eventually(func() bool {
+		Eventually(func() string {
 			obj, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), name, metav1.GetOptions{})
 			Expect(err).To(BeNil())
 
 			status, ok := obj.Object["status"].(map[string]interface{})
 			Expect(err).To(BeNil())
 			if !ok {
-				return false
+				return ""
 			}
 
 			id := status["id"].(string)
-			if id != "" {
-				return true
-			}
-			return false
-		}, time.Second*10, time.Second*5).Should(BeTrue()) // TODO - use a regex match for /subscriptions/.../resourceGroups/<name>
-		Expect(k8sClient).ToNot(BeNil())
+			return id
+		}, time.Second*10, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + name))
 
 		By("deleting the resource CRD")
 		err = k8sClient.Resource(gvrResourceGroup).Namespace("default").Delete(context.TODO(), name, metav1.DeleteOptions{})
