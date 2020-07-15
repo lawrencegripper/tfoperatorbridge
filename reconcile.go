@@ -90,14 +90,6 @@ func configureProvider(provider *plugin.GRPCProvider) {
 	}
 }
 
-// TODO remove this function once the informer is updated to create and use TerraformReconciler
-func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured) {
-	r := NewTerraformReconciler(provider)
-	if err := r.Reconcile(crd); err != nil {
-		panic(err)
-	}
-}
-
 // TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
 type TerraformReconciler struct {
 	provider *plugin.GRPCProvider
