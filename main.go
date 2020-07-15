@@ -20,9 +20,10 @@ func main() {
 
 	// Example creating CRDs in K8s with correct structure based on TF Schemas
 	resources := createCRDsForResources(provider)
-	startSharedInformer(provider, resources)
+	// startSharedInformer(provider, resources)
 
 	// Start an informer to watch for crd items
+	setupControllerRuntime(provider, resources)
 }
 
 func getInstanceOfAzureRMProvider() *plugin.GRPCProvider {

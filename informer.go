@@ -9,7 +9,6 @@ import (
 	"github.com/hashicorp/terraform/plugin"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
@@ -20,7 +19,7 @@ var enabledResources = map[string]bool{
 	"storage-accounts": true,
 }
 
-func startSharedInformer(provider *plugin.GRPCProvider, gvrResources []schema.GroupVersionResource) {
+func startSharedInformer(provider *plugin.GRPCProvider, gvResources []GroupVersionFull) {
 	clientConfig := getK8sClientConfig()
 
 	clientSet, err := dynamic.NewForConfig(clientConfig)
@@ -33,10 +32,10 @@ func startSharedInformer(provider *plugin.GRPCProvider, gvrResources []schema.Gr
 	reconciler := NewTerraformReconciler(provider)
 
 	// Todo: Temp hack! Look to register one informer or use controller runtime
-	for _, gvr := range gvrResources {
+	for _, gv := range gvResources {
 
 		// Only create informers for enabled resources
-		exists, enabled := enabledResources[gvr.Resource]
+		exists, enabled := enabledResources[gv.GroupVersionResource.Resource]
 		if !exists {
 			continue
 		}
@@ -44,9 +43,9 @@ func startSharedInformer(provider *plugin.GRPCProvider, gvrResources []schema.Gr
 			continue
 		}
 
-		log.Printf("Registering informer for %q", gvr.Resource)
+		log.Printf("Registering informer for %q", gv.GroupVersionResource.Resource)
 
-		informerGeneric := factory.ForResource(gvr)
+		informerGeneric := factory.ForResource(gv.GroupVersionResource)
 		informer := informerGeneric.Informer()
 
 		informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
