@@ -90,7 +90,13 @@ func configureProvider(provider *plugin.GRPCProvider) {
 	}
 }
 
+// TODO remove the usage of reconcileCrd in informer and switch to reconcileCrdInternal
 func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured) {
+	if err := reconcileCrdInternal(provider, crd); err != nil {
+		panic(err)
+	}
+}
+func reconcileCrdInternal(provider *plugin.GRPCProvider, crd *unstructured.Unstructured) error {
 
 	// Get the kinds terraform schema
 	kind := crd.GetKind()
@@ -110,27 +116,28 @@ func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured)
 		spec := crd.Object["spec"].(map[string]interface{})
 		jsonSpecRaw, err := json.Marshal(spec)
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("Error marshalling the CRD spec to JSON: %s", err)
 		}
 
 		// Create a TF cty.Value from the Spec JSON
 		configValue = createEmptyResourceValue(schema, "test1")
-		configValue, err = applyValuesFromJSON(schema, configValue, string(jsonSpecRaw))
+		configValue, err = applySpecValuesToTerraformConfig(schema, configValue, string(jsonSpecRaw))
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err)
 		}
 	}
 
-	state, err := getTfState(crd)
+	state, err := getTerraformState(crd)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("Error getting Terraform state from CRD: %s", err)
 	}
-	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
+	newState, err := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
+	if err != nil {
+		return fmt.Errorf("Error applying changes in Terraform: %s", err)
+	}
 
-	if err := saveTfState(crd, newState); err != nil {
-		if err != nil {
-			panic(err)
-		}
+	if err := saveTerraformState(crd, newState); err != nil {
+		return fmt.Errorf("Error saving Terraform state to CRD: %s", err)
 	}
 	saveLastAppliedGeneration(crd)
 
@@ -143,6 +150,7 @@ func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured)
 			"id": newStateMap["id"].AsString(),
 		}
 	}
+	return nil
 }
 
 func isDeleting(resource *unstructured.Unstructured) bool {
@@ -194,7 +202,7 @@ func removeFinalizer(resource *unstructured.Unstructured) {
 	metadata["finalizers"] = updatedFinalizers
 	resource.Object["metadata"] = metadata
 }
-func getTfState(resource *unstructured.Unstructured) ([]byte, error) {
+func getTerraformState(resource *unstructured.Unstructured) ([]byte, error) {
 	annotations := resource.GetAnnotations()
 	if annotations != nil {
 		if stateString, exists := annotations["tfstate"]; exists {
@@ -207,7 +215,7 @@ func getTfState(resource *unstructured.Unstructured) ([]byte, error) {
 	}
 	return []byte{}, nil
 }
-func saveTfState(resource *unstructured.Unstructured, state *cty.Value) error {
+func saveTerraformState(resource *unstructured.Unstructured, state *cty.Value) error {
 	serializedState, err := ctyjson.Marshal(*state, state.Type())
 	if err != nil {
 		return err
@@ -237,7 +245,7 @@ func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty
 	return &value
 }
 
-func applyValuesFromJSON(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
+func applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
 	valueMap := originalValue.AsValueMap()
 
 	// TODO - track the json fields that are accessed so that we can return an error if there
@@ -302,7 +310,7 @@ func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
 	}
 }
 
-func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) *cty.Value {
+func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) (*cty.Value, error) {
 	schema := provider.GetSchema().ResourceTypes[resourceName]
 	var state cty.Value
 	if len(stateSerialized) == 0 {
@@ -323,9 +331,9 @@ func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, conf
 		Config:           config, // Config from CRD representing desired state ? Unsure why duplicated but hey ho.
 	})
 
-	if planResponse.Diagnostics.Err() != nil {
-		log.Println(planResponse.Diagnostics.Err().Error())
-		panic("Failed planning resource")
+	if err := planResponse.Diagnostics.Err(); err != nil {
+		log.Println(err.Error())
+		return nil, fmt.Errorf("Failed in Terraform Plan: %s", err)
 	}
 
 	applyResponse := provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
@@ -334,10 +342,10 @@ func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, conf
 		Config:       config,                    // The current HCL configuration or what would be in your terraform file
 		PlannedState: planResponse.PlannedState, // The result of a plan (read / diff) between HCL Config and actual resource state
 	})
-	if applyResponse.Diagnostics.Err() != nil {
-		log.Println(applyResponse.Diagnostics.Err().Error())
-		panic("Failed applying resourceGroup")
+	if err := applyResponse.Diagnostics.Err(); err != nil {
+		log.Println(err.Error())
+		return nil, fmt.Errorf("Failed in Terraform Apply: %s", err)
 	}
 
-	return &applyResponse.NewState
+	return &applyResponse.NewState, nil
 }
