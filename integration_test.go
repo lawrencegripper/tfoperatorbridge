@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"context"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -12,12 +13,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	main "github.com/lawrencegripper/tfoperatorbridge"
 )
 
+func RandomString(n int) string {
+	rand.Seed(time.Now().UnixNano())
+
+	var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+	s := make([]rune, n)
+	for i := range s {
+		s[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(s)
+}
+
 var _ = Describe("When working with a resource group", func() {
-	name := "tftest-" + strings.ToLower(main.RandomString(12))
+	name := "tftest-" + strings.ToLower(RandomString(12))
 	gvrResourceGroup := schema.GroupVersionResource{
 		Group:    "azurerm.tfb.local",
 		Version:  "valpha1",

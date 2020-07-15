@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
@@ -231,71 +229,6 @@ func saveLastAppliedGeneration(resource *unstructured.Unstructured) {
 	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
 	resource.SetAnnotations(annotations)
 }
-func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
-	// (Data Source) Example 1: Read an subscription azurerm datasource
-	// readSubscriptionDataSource(provider)
-
-	// #1 Create RG
-	rgSchema := provider.GetSchema().ResourceTypes["azurerm_resource_group"]
-	rgName := "tob" + RandomString(12)
-	log.Println(fmt.Sprintf("-------------------> Testing with Resource Group %q", rgName))
-
-	configValue := createEmptyResourceValue(rgSchema, "test1")
-	configValue, err := applyValuesFromJSON(rgSchema, configValue, `{
-		"name": "`+rgName+`", 
-		"location": "westeurope"
-	}`)
-	if err != nil {
-		log.Println(err)
-		panic("Failed to get Value from JSON")
-	}
-
-	rgState1 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", *configValue, []byte{})
-
-	// #2 Update RG with tags
-	configValue = createEmptyResourceValue(rgSchema, "test1")
-	configValue, err = applyValuesFromJSON(rgSchema, configValue, `{
-		"name": "`+rgName+`", 
-		"location": "westeurope", 
-		"tags" : {
-			"testTag": "testTagValue2"
-		}
-	}`)
-	if err != nil {
-		log.Println(err)
-		panic("Failed to get Value from JSON")
-	}
-	rgState2 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", *configValue, rgState1)
-
-	// #3 Create Storage Account
-	storageSchema := provider.GetSchema().ResourceTypes["azurerm_storage_account"]
-	storageName := strings.ToLower("tob" + RandomString(12))
-	log.Println(fmt.Sprintf("-------------------> Testing with Storage Account %q", rgName))
-
-	configValue = createEmptyResourceValue(storageSchema, "test1")
-	configValue, err = applyValuesFromJSON(storageSchema, configValue, `{
-		"name": "`+storageName+`",
-		"resource_group_name": "`+rgName+`", 
-		"location": "westeurope",
-		"account_tier": "Standard",
-		"account_replication_type": "LRS",
-		"is_hns_enabled" : false
-	}`)
-	if err != nil {
-		log.Println(err)
-		panic("Failed to get Value from JSON")
-	}
-	storageState1 := planAndApplyConfigAndEncodeState(provider, "azurerm_storage_account", *configValue, []byte{})
-	_ = storageState1
-
-	// 4 Delete the RG
-	rgNullValueResource := cty.NullVal(rgSchema.Block.ImpliedType())
-	rgState3 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", rgNullValueResource, rgState2)
-
-	// Todo: Persist the state response from apply somewhere
-	_ = rgState3
-}
-
 func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
 	emptyValue := schema.Block.EmptyValue()
 	valueMap := emptyValue.AsValueMap()
@@ -369,16 +302,6 @@ func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
 	}
 }
 
-func planAndApplyConfigAndEncodeState(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
-	resultState := planAndApplyConfig(provider, resourceName, config, stateSerialized)
-	serializedState, err := resultState.GobEncode()
-	if err != nil {
-		log.Println(err)
-		panic("Failed to encode state")
-	}
-	return serializedState
-}
-
 func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) *cty.Value {
 	schema := provider.GetSchema().ResourceTypes[resourceName]
 	var state cty.Value
@@ -417,44 +340,4 @@ func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, conf
 	}
 
 	return &applyResponse.NewState
-}
-
-func readSubscriptionDataSource(provider *plugin.GRPCProvider) {
-	// Now lets use the provider to read from `azurerm_subscription` data source
-	// First lets get the Schema for the datasource.
-	subDataSourceSchema := provider.GetSchema().DataSources["azurerm_subscription"]
-	// Now lets get an empty value map which represents that schema with empty attributes
-	subConfigValueMap := subDataSourceSchema.Block.EmptyValue().AsValueMap()
-	// Then lets give the data source a display name as this is the only required field here.
-	// NOTE: display name is the section following the resource declaration in HCL
-	// data "azurerm_subscription" "display_name" here
-	subConfigValueMap["display_name"] = cty.StringVal("testing1")
-
-	// Then package this back up as an objectVal and submit it to the provider
-	readResp := provider.ReadDataSource(providers.ReadDataSourceRequest{
-		TypeName: "azurerm_subscription",
-		Config:   cty.ObjectVal(subConfigValueMap),
-	})
-
-	// Check it didn't error.
-	if readResp.Diagnostics.Err() != nil {
-		log.Println(readResp.Diagnostics.Err().Error())
-		panic("Failed reading subscription")
-	}
-
-	log.Println("Read subscription data")
-	log.Println(readResp.State)
-
-}
-
-func RandomString(n int) string {
-	rand.Seed(time.Now().UnixNano())
-
-	var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-
-	s := make([]rune, n)
-	for i := range s {
-		s[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(s)
 }
