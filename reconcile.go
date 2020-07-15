@@ -248,9 +248,7 @@ func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty
 func applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
 	valueMap := originalValue.AsValueMap()
 
-	// TODO - track the json fields that are accessed so that we can return an error if there
-	// are any that weren't visited, i.e. not defined in the schema
-
+	mappedNames := map[string]bool{}
 	var jsonData map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonString), &jsonData); err != nil {
 		return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
@@ -264,10 +262,21 @@ func applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *ct
 				return nil, fmt.Errorf("Error getting value for %q: %s", name, err)
 			}
 			valueMap[name] = *v
+			mappedNames[name] = true
+		}
+	}
+	unmappedNames := []string{}
+	for jsonName, _ := range jsonData {
+		if !mappedNames[jsonName] {
+			unmappedNames = append(unmappedNames, jsonName)
 		}
 	}
 
-	// TODO handle schema.Block.BlockTypes
+	// TODO handle schema.Block.BlockTypes as well as schema.Block.Attributes
+
+	if len(unmappedNames) > 0 {
+		return nil, fmt.Errorf("Unmapped values in JSON: %s", strings.Join(unmappedNames, ","))
+	}
 
 	newValue := cty.ObjectVal(valueMap)
 	return &newValue, nil
