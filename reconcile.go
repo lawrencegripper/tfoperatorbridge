@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
@@ -92,12 +90,23 @@ func configureProvider(provider *plugin.GRPCProvider) {
 	}
 }
 
-func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured) {
+// TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
+type TerraformReconciler struct {
+	provider *plugin.GRPCProvider
+}
+
+func NewTerraformReconciler(provider *plugin.GRPCProvider) *TerraformReconciler {
+	return &TerraformReconciler{
+		provider: provider,
+	}
+}
+
+func (r *TerraformReconciler) Reconcile(crd *unstructured.Unstructured) error {
 
 	// Get the kinds terraform schema
 	kind := crd.GetKind()
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
-	schema := provider.GetSchema().ResourceTypes[resourceName]
+	schema := r.provider.GetSchema().ResourceTypes[resourceName]
 
 	var configValue *cty.Value
 	var deleting bool
@@ -112,27 +121,28 @@ func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured)
 		spec := crd.Object["spec"].(map[string]interface{})
 		jsonSpecRaw, err := json.Marshal(spec)
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("Error marshalling the CRD spec to JSON: %s", err)
 		}
 
 		// Create a TF cty.Value from the Spec JSON
 		configValue = createEmptyResourceValue(schema, "test1")
-		configValue, err = applyValuesFromJSON(schema, configValue, string(jsonSpecRaw))
+		configValue, err = applySpecValuesToTerraformConfig(schema, configValue, string(jsonSpecRaw))
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err)
 		}
 	}
 
-	state, err := getTfState(crd)
+	state, err := getTerraformState(crd)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("Error getting Terraform state from CRD: %s", err)
 	}
-	newState := planAndApplyConfig(provider, resourceName, *configValue, []byte(state))
+	newState, err := r.planAndApplyConfig(resourceName, *configValue, []byte(state))
+	if err != nil {
+		return fmt.Errorf("Error applying changes in Terraform: %s", err)
+	}
 
-	if err := saveTfState(crd, newState); err != nil {
-		if err != nil {
-			panic(err)
-		}
+	if err := saveTerraformState(crd, newState); err != nil {
+		return fmt.Errorf("Error saving Terraform state to CRD: %s", err)
 	}
 	saveLastAppliedGeneration(crd)
 
@@ -145,6 +155,7 @@ func reconcileCrd(provider *plugin.GRPCProvider, crd *unstructured.Unstructured)
 			"id": newStateMap["id"].AsString(),
 		}
 	}
+	return nil
 }
 
 func isDeleting(resource *unstructured.Unstructured) bool {
@@ -196,7 +207,7 @@ func removeFinalizer(resource *unstructured.Unstructured) {
 	metadata["finalizers"] = updatedFinalizers
 	resource.Object["metadata"] = metadata
 }
-func getTfState(resource *unstructured.Unstructured) ([]byte, error) {
+func getTerraformState(resource *unstructured.Unstructured) ([]byte, error) {
 	annotations := resource.GetAnnotations()
 	if annotations != nil {
 		if stateString, exists := annotations["tfstate"]; exists {
@@ -209,7 +220,7 @@ func getTfState(resource *unstructured.Unstructured) ([]byte, error) {
 	}
 	return []byte{}, nil
 }
-func saveTfState(resource *unstructured.Unstructured, state *cty.Value) error {
+func saveTerraformState(resource *unstructured.Unstructured, state *cty.Value) error {
 	serializedState, err := ctyjson.Marshal(*state, state.Type())
 	if err != nil {
 		return err
@@ -231,71 +242,6 @@ func saveLastAppliedGeneration(resource *unstructured.Unstructured) {
 	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
 	resource.SetAnnotations(annotations)
 }
-func exampleChangesToResourceGroup(provider *plugin.GRPCProvider) {
-	// (Data Source) Example 1: Read an subscription azurerm datasource
-	// readSubscriptionDataSource(provider)
-
-	// #1 Create RG
-	rgSchema := provider.GetSchema().ResourceTypes["azurerm_resource_group"]
-	rgName := "tob" + RandomString(12)
-	log.Println(fmt.Sprintf("-------------------> Testing with Resource Group %q", rgName))
-
-	configValue := createEmptyResourceValue(rgSchema, "test1")
-	configValue, err := applyValuesFromJSON(rgSchema, configValue, `{
-		"name": "`+rgName+`", 
-		"location": "westeurope"
-	}`)
-	if err != nil {
-		log.Println(err)
-		panic("Failed to get Value from JSON")
-	}
-
-	rgState1 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", *configValue, []byte{})
-
-	// #2 Update RG with tags
-	configValue = createEmptyResourceValue(rgSchema, "test1")
-	configValue, err = applyValuesFromJSON(rgSchema, configValue, `{
-		"name": "`+rgName+`", 
-		"location": "westeurope", 
-		"tags" : {
-			"testTag": "testTagValue2"
-		}
-	}`)
-	if err != nil {
-		log.Println(err)
-		panic("Failed to get Value from JSON")
-	}
-	rgState2 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", *configValue, rgState1)
-
-	// #3 Create Storage Account
-	storageSchema := provider.GetSchema().ResourceTypes["azurerm_storage_account"]
-	storageName := strings.ToLower("tob" + RandomString(12))
-	log.Println(fmt.Sprintf("-------------------> Testing with Storage Account %q", rgName))
-
-	configValue = createEmptyResourceValue(storageSchema, "test1")
-	configValue, err = applyValuesFromJSON(storageSchema, configValue, `{
-		"name": "`+storageName+`",
-		"resource_group_name": "`+rgName+`", 
-		"location": "westeurope",
-		"account_tier": "Standard",
-		"account_replication_type": "LRS",
-		"is_hns_enabled" : false
-	}`)
-	if err != nil {
-		log.Println(err)
-		panic("Failed to get Value from JSON")
-	}
-	storageState1 := planAndApplyConfigAndEncodeState(provider, "azurerm_storage_account", *configValue, []byte{})
-	_ = storageState1
-
-	// 4 Delete the RG
-	rgNullValueResource := cty.NullVal(rgSchema.Block.ImpliedType())
-	rgState3 := planAndApplyConfigAndEncodeState(provider, "azurerm_resource_group", rgNullValueResource, rgState2)
-
-	// Todo: Persist the state response from apply somewhere
-	_ = rgState3
-}
-
 func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
 	emptyValue := schema.Block.EmptyValue()
 	valueMap := emptyValue.AsValueMap()
@@ -304,12 +250,10 @@ func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty
 	return &value
 }
 
-func applyValuesFromJSON(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
+func applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
 	valueMap := originalValue.AsValueMap()
 
-	// TODO - track the json fields that are accessed so that we can return an error if there
-	// are any that weren't visited, i.e. not defined in the schema
-
+	mappedNames := map[string]bool{}
 	var jsonData map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonString), &jsonData); err != nil {
 		return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
@@ -318,21 +262,32 @@ func applyValuesFromJSON(schema providers.Schema, originalValue *cty.Value, json
 	for name, attribute := range schema.Block.Attributes {
 		jsonVal, gotJsonVal := jsonData[name]
 		if gotJsonVal {
-			v, err := getValue(attribute.Type, jsonVal)
+			v, err := getTerraformValueFromInterface(attribute.Type, jsonVal)
 			if err != nil {
 				return nil, fmt.Errorf("Error getting value for %q: %s", name, err)
 			}
 			valueMap[name] = *v
+			mappedNames[name] = true
+		}
+	}
+	unmappedNames := []string{}
+	for jsonName, _ := range jsonData {
+		if !mappedNames[jsonName] {
+			unmappedNames = append(unmappedNames, jsonName)
 		}
 	}
 
-	// TODO handle schema.Block.BlockTypes
+	// TODO handle schema.Block.BlockTypes as well as schema.Block.Attributes
+
+	if len(unmappedNames) > 0 {
+		return nil, fmt.Errorf("Unmapped values in JSON: %s", strings.Join(unmappedNames, ","))
+	}
 
 	newValue := cty.ObjectVal(valueMap)
 	return &newValue, nil
 }
 
-func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
+func getTerraformValueFromInterface(t cty.Type, value interface{}) (*cty.Value, error) {
 	// TODO handle other types: bool, int, float, list, ....
 	if t.Equals(cty.String) {
 		sv, ok := value.(string)
@@ -356,7 +311,7 @@ func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
 		}
 		resultMap := map[string]cty.Value{}
 		for k, v := range mv {
-			mapValue, err := getValue(*elementType, v)
+			mapValue, err := getTerraformValueFromInterface(*elementType, v)
 			if err != nil {
 				return nil, fmt.Errorf("Error getting map value for property %q: %v", k, v)
 			}
@@ -369,20 +324,20 @@ func getValue(t cty.Type, value interface{}) (*cty.Value, error) {
 	}
 }
 
-func planAndApplyConfigAndEncodeState(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) []byte {
-	resultState := planAndApplyConfig(provider, resourceName, config, stateSerialized)
-	serializedState, err := resultState.GobEncode()
-	if err != nil {
-		log.Println(err)
-		panic("Failed to encode state")
-	}
-	return serializedState
-}
+// func applyTerraformValueToCrdStatus(value *cty.Value, crd *unstructured.Unstructured) {
+// 	valueMap := value.AsValueMap()
 
-func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, config cty.Value, stateSerialized []byte) *cty.Value {
-	schema := provider.GetSchema().ResourceTypes[resourceName]
+// 	crd.Object["status"] = map[string]interface{}{
+// 		"id": newStateMap["id"].AsString(),
+// 	}
+
+// }
+
+func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, stateSerialized []byte) (*cty.Value, error) {
+	schema := r.provider.GetSchema().ResourceTypes[resourceName]
 	var state cty.Value
 	if len(stateSerialized) == 0 {
+		schema := r.provider.GetSchema().ResourceTypes[resourceName]
 		state = schema.Block.EmptyValue()
 	} else {
 		unmashaledState, err := ctyjson.Unmarshal(stateSerialized, schema.Block.ImpliedType())
@@ -393,68 +348,28 @@ func planAndApplyConfig(provider *plugin.GRPCProvider, resourceName string, conf
 		state = unmashaledState
 	}
 
-	planResponse := provider.PlanResourceChange(providers.PlanResourceChangeRequest{
+	planResponse := r.provider.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
 		PriorState:       state,  // State after last apply or empty if non-existent
 		ProposedNewState: config, // Config from CRD representing desired state
 		Config:           config, // Config from CRD representing desired state ? Unsure why duplicated but hey ho.
 	})
 
-	if planResponse.Diagnostics.Err() != nil {
-		log.Println(planResponse.Diagnostics.Err().Error())
-		panic("Failed planning resource")
+	if err := planResponse.Diagnostics.Err(); err != nil {
+		log.Println(err.Error())
+		return nil, fmt.Errorf("Failed in Terraform Plan: %s", err)
 	}
 
-	applyResponse := provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
+	applyResponse := r.provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
 		TypeName:     resourceName,              // Working theory:
 		PriorState:   state,                     // This is the state from the .tfstate file before the apply is made
 		Config:       config,                    // The current HCL configuration or what would be in your terraform file
 		PlannedState: planResponse.PlannedState, // The result of a plan (read / diff) between HCL Config and actual resource state
 	})
-	if applyResponse.Diagnostics.Err() != nil {
-		log.Println(applyResponse.Diagnostics.Err().Error())
-		panic("Failed applying resourceGroup")
+	if err := applyResponse.Diagnostics.Err(); err != nil {
+		log.Println(err.Error())
+		return nil, fmt.Errorf("Failed in Terraform Apply: %s", err)
 	}
 
-	return &applyResponse.NewState
-}
-
-func readSubscriptionDataSource(provider *plugin.GRPCProvider) {
-	// Now lets use the provider to read from `azurerm_subscription` data source
-	// First lets get the Schema for the datasource.
-	subDataSourceSchema := provider.GetSchema().DataSources["azurerm_subscription"]
-	// Now lets get an empty value map which represents that schema with empty attributes
-	subConfigValueMap := subDataSourceSchema.Block.EmptyValue().AsValueMap()
-	// Then lets give the data source a display name as this is the only required field here.
-	// NOTE: display name is the section following the resource declaration in HCL
-	// data "azurerm_subscription" "display_name" here
-	subConfigValueMap["display_name"] = cty.StringVal("testing1")
-
-	// Then package this back up as an objectVal and submit it to the provider
-	readResp := provider.ReadDataSource(providers.ReadDataSourceRequest{
-		TypeName: "azurerm_subscription",
-		Config:   cty.ObjectVal(subConfigValueMap),
-	})
-
-	// Check it didn't error.
-	if readResp.Diagnostics.Err() != nil {
-		log.Println(readResp.Diagnostics.Err().Error())
-		panic("Failed reading subscription")
-	}
-
-	log.Println("Read subscription data")
-	log.Println(readResp.State)
-
-}
-
-func RandomString(n int) string {
-	rand.Seed(time.Now().UnixNano())
-
-	var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-
-	s := make([]rune, n)
-	for i := range s {
-		s[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(s)
+	return &applyResponse.NewState, nil
 }

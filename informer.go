@@ -30,6 +30,7 @@ func startSharedInformer(provider *plugin.GRPCProvider, gvrResources []schema.Gr
 	}
 
 	factory := dynamicinformer.NewDynamicSharedInformerFactory(clientSet, time.Minute*5)
+	reconciler := NewTerraformReconciler(provider)
 
 	// Todo: Temp hack! Look to register one informer or use controller runtime
 	for _, gvr := range gvrResources {
@@ -58,7 +59,7 @@ func startSharedInformer(provider *plugin.GRPCProvider, gvrResources []schema.Gr
 					return
 				}
 
-				reconcileCrd(provider, resource)
+				reconciler.Reconcile(resource)
 
 				_, err := saveResource(clientSet, resource)
 				if err != nil {
@@ -77,7 +78,7 @@ func startSharedInformer(provider *plugin.GRPCProvider, gvrResources []schema.Gr
 					return
 				}
 
-				reconcileCrd(provider, resource)
+				reconciler.Reconcile(resource)
 
 				_, err := saveResource(clientSet, resource)
 				if err != nil {
