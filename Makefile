@@ -12,3 +12,13 @@ terraform-hack-init:
 integration-tests:
 	# TODO automatically run the operator
 	ginkgo --progress
+
+create-rg:
+	kubectl apply -f ./examples/resourceGroup.yaml
+
+create-stor:
+	kubectl apply -f ./examples/storageAccount.yaml
+
+clear-all:
+	kubectl delete -f ./examples/storageAccount.yaml
+	kubectl delete -f ./examples/resourceGroup.yaml

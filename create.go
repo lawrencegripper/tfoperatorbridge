@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/go-openapi/spec"
@@ -16,9 +17,10 @@ import (
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func createCRDsForResources(provider *plugin.GRPCProvider) {
+func createCRDsForResources(provider *plugin.GRPCProvider) []schema.GroupVersionResource {
 	// Status: This runs but very little validation of the outputted openAPI apecs has been done. Bugs are likely
 
 	tfSchema := provider.GetSchema()
@@ -62,9 +64,11 @@ func createCRDsForResources(provider *plugin.GRPCProvider) {
 	}
 
 	// Install all of the resources as CRDs into the cluster
-	installCRDs(resources, "azurerm", fmt.Sprintf("v%v", "alpha1"))
+	gvrArray := installCRDs(resources, "azurerm", fmt.Sprintf("v%v", "alpha1"))
 
 	fmt.Printf("Creating CRDs - Done")
+
+	return gvrArray
 }
 
 // This walks the schema and adds the fields to spec/status based on whether they're computed or not.
@@ -132,8 +136,9 @@ func getSchemaForType(name string, item *cty.Type) *spec.Schema {
 }
 
 // k8s stuff
-func installCRDs(resources []spec.Schema, providerName, providerVersion string) {
+func installCRDs(resources []spec.Schema, providerName, providerVersion string) []schema.GroupVersionResource {
 	clientConfig := getK8sClientConfig()
+	gvrArray := make([]schema.GroupVersionResource, 0, len(resources))
 
 	// create the clientset
 	apiextensionsClientSet, err := apiextensionsclientset.NewForConfig(clientConfig)
@@ -156,6 +161,12 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 		version := providerVersion
 		crdName := plural + "." + groupName
 
+		gvrArray = append(gvrArray, schema.GroupVersionResource{
+			Group:    groupName,
+			Resource: plural,
+			Version:  version,
+		})
+
 		crd := &apiextensionsv1beta1.CustomResourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      crdName,
@@ -174,11 +185,21 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 				},
 			},
 		}
-		_, err = createCustomResourceDefinition("default", apiextensionsClientSet, crd)
+
+		// Skip CRD Creation if env set.
+		_, skipcreation := os.LookupEnv("SKIP_CRD_CREATION")
+		if skipcreation {
+			fmt.Println("SKIP_CRD_CREATION set - skipping CRD creation")
+		} else {
+			_, err = createCustomResourceDefinition("default", apiextensionsClientSet, crd)
+		}
+
 		if err != nil {
 			log.Println(err.Error())
 		}
 	}
+
+	return gvrArray
 }
 
 func createCustomResourceDefinition(namespace string, clientSet apiextensionsclientset.Interface, crd *apiextensionsv1beta1.CustomResourceDefinition) (*apiextensionsv1beta1.CustomResourceDefinition, error) {
