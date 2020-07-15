@@ -36,9 +36,12 @@ func (r *controller) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	_ = ctx
 
-	// Bug: Unstructured has no kind/schema look at runtime.Unstructured.
-	var resource unstructured.Unstructured
-	err := r.Client.Get(ctx, req.NamespacedName, &resource)
+	// Note: Create an unstructued type for the Client to use and set the Kind
+	// so that it can GET/UPDATE/DELETE etc
+	resource := &unstructured.Unstructured{}
+	resource.SetGroupVersionKind(*r.gvk)
+
+	err := r.Client.Get(ctx, req.NamespacedName, resource)
 	if err != nil {
 		log.Error(err, "Failed getting resource", "req", req.NamespacedName)
 	}
@@ -47,9 +50,9 @@ func (r *controller) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	// Note this mutate the resource state
 	// Todo: Return resource to make this clear from method maybe?
-	r.tfReconciler.Reconcile(&resource)
+	r.tfReconciler.Reconcile(resource)
 
-	err = r.Client.Update(ctx, &resource)
+	err = r.Client.Update(ctx, resource)
 	if err != nil {
 		log.Error(err, "Failed saving resource")
 		panic("Error updating CRD instance (Add)") // TODO handle retries
@@ -81,6 +84,7 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 	}
 
 	for _, gv := range resources {
+		groupVersionKind := gv.GroupVersionKind
 		setupLog.Info("Enabling controller for resource", "kind", gv.GroupVersionKind.Kind)
 		err = ctrl.NewControllerManagedBy(mgr).
 			// Note: Generation Changed Predicate means controller only called when an update is made to spec
@@ -90,7 +94,7 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 				Client:       mgr.GetClient(),
 				tfReconciler: NewTerraformReconciler(provider),
 				scheme:       mgr.GetScheme(),
-				gvk:          &gv.GroupVersionKind,
+				gvk:          &groupVersionKind,
 			})
 		if err != nil {
 			setupLog.Error(err, "unable to create controller", "kind", gv.GroupVersionKind.Kind)
