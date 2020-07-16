@@ -33,7 +33,7 @@ type controller struct {
 }
 
 func (r *controller) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	log := recLog.WithValues("generic reconciler", req.NamespacedName)
+	log := recLog.WithValues("name", req.NamespacedName)
 	log.V(1).Info("reconciling runtimeobj")
 	ctx := context.Background()
 
@@ -49,24 +49,20 @@ func (r *controller) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "Failed getting resource", "req", req.NamespacedName)
+		log.Error(err, "Failed getting resource")
 		return ctrl.Result{}, fmt.Errorf("Failed getting resource %q %w", req.NamespacedName.String(), err)
 	}
-	gen := resource.GetGeneration()
-	log.Info("*** Reconciler called", "namespace", resource.GetNamespace(), "kind", resource.GetKind(), "name", resource.GetName(), "generation", gen)
+	log = log.WithValues("kind", resource.GetKind(), "gen", resource.GetGeneration())
 
 	// Note this mutate the resource state
 	// Todo: Return resource to make this clear from method maybe?
-	err = r.tfReconciler.Reconcile(resource)
+	result, err := r.tfReconciler.Reconcile(ctx, log, resource)
 	if err != nil {
-		log.Error(err, "Failed TF Reconciler on resource", "req", req.NamespacedName, err)
+		log.Error(err, "Failed TF Reconciler on resource")
 		return ctrl.Result{}, fmt.Errorf("Failed TF Reconciler on resource %q %w", req.NamespacedName.String(), err)
 	}
-
-	err = r.Client.Update(ctx, resource)
-	if err != nil {
-		log.Error(err, "Failed saving resource")
-		return ctrl.Result{}, fmt.Errorf("Failed saving resource %q %w", req.NamespacedName.String(), err)
+	if result != nil {
+		return *result, nil
 	}
 
 	// Detect drift by checking resource every x mins
@@ -99,13 +95,14 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 	for _, gv := range resources {
 		groupVersionKind := gv.GroupVersionKind
 		setupLog.Info("Enabling controller for resource", "kind", gv.GroupVersionKind.Kind)
+		client := mgr.GetClient()
 		err = ctrl.NewControllerManagedBy(mgr).
 			// Note: Generation Changed Predicate means controller only called when an update is made to spec
 			// or other case causing generation to change
 			For(runtimeObjFromGVK(gv.GroupVersionKind), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 			Complete(&controller{
-				Client:       mgr.GetClient(),
-				tfReconciler: NewTerraformReconciler(provider),
+				Client:       client,
+				tfReconciler: NewTerraformReconciler(provider, client),
 				scheme:       mgr.GetScheme(),
 				gvk:          &groupVersionKind,
 			})

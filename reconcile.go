@@ -1,108 +1,39 @@
 package main
 
 import (
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 
+	"github.com/go-logr/logr"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-func configureProvider(provider *plugin.GRPCProvider) {
-	providerConfigBlock := provider.GetSchema().Provider.Block
-
-	// We need a set of cty.Value which maps to the schema of the provider's configuration block.
-	// NOTE:
-	// 1. If the schema has optional elements they're NOT optional in the cty.Value. The cty.Value structure must include all fields
-	//    specified in the schema. The values of the attributes can be empy if they're optional. To get this we use `EmptyValue` on the schema
-	//    this iterates the schema and creates a `cty.ObjectVal` which maps to the schema with each attribute set to empty.
-	// 2. If the schema includes a List item with a min 1 length the `EmptyValue` will no create a valid ObjectVal for the schema.
-	//    It will create an empty list item `[]stringval{}` as this doesn't have 1 item it doesn't match the schema. What is needed is a list with 1 item.
-	//    When these items are missing the error messages are of the format `features attribute is required`
-	// 3. When the `cty.ObjectVal` doesn't follow the required schema the error messages provided back don't make this immediately clear.
-	//    You may for example receive a message of `attribute 'use_msi' bool is required` when the error was introducing the wrong structure for the `features` list
-	configProvider := providerConfigBlock.EmptyValue()
-
-	// Here is an example of a list min 1.
-	// The `features` block in the Azure RM provider
-	//
-	// provider "azurerm" {
-	// 	version = "=2.0.0"
-	// 	features {}
-	// }
-	//
-	// Represented as YAML this would be:
-	//
-	// features:
-	// - ~
-
-	// Workaround to create a `cty.ListVal` for `features` block with one blank item in it.
-	// Get block definition
-	featuresType := providerConfigBlock.BlockTypes["features"]
-	// Create a map to represent the block
-	featuresBlockMap := map[string]cty.Value{}
-	log.Println(featuresType)
-	// Get each of the nested blocks required in the block and create
-	// empty items for them. Insert them into the featuresBlockMap
-	for name, nestedBlock := range featuresType.BlockTypes {
-		featuresBlockMap[name] = nestedBlock.EmptyValue()
-	}
-	configValueMap := configProvider.AsValueMap()
-	// On the provider config block set the `features` attribute to be a list with an instance of the features block in it.
-	configValueMap["features"] = cty.ListVal([]cty.Value{cty.ObjectVal(featuresBlockMap)})
-
-	configFull := cty.ObjectVal(configValueMap)
-
-	// Call the `PrepareProviderConfig` with the config object. This returns a version of that config with the
-	// required default setup as `PreparedConfig` under the response object.
-	// Warning: Diagnostics houses errors, the typical go err pattern isn't followed - must check `resp.Diagnostics.Err()`
-	prepConfigResp := provider.PrepareProviderConfig(providers.PrepareProviderConfigRequest{
-		Config: configFull,
-	})
-	if prepConfigResp.Diagnostics.Err() != nil {
-		log.Println(prepConfigResp.Diagnostics.Err().Error())
-		panic("Failed to prepare config")
-	}
-
-	// Lets set the values we need to set while we have the value map
-	configValueMap = prepConfigResp.PreparedConfig.AsValueMap()
-	configValueMap["client_id"] = cty.StringVal(os.Getenv("ARM_CLIENT_ID"))
-	configValueMap["client_secret"] = cty.StringVal(os.Getenv("ARM_CLIENT_SECRET"))
-	configValueMap["tenant_id"] = cty.StringVal(os.Getenv("ARM_TENANT_ID"))
-	configValueMap["subscription_id"] = cty.StringVal(os.Getenv("ARM_SUBSCRIPTION_ID"))
-
-	// Now we have a prepared config we can configure the provider.
-	// Warning (again): Diagnostics houses errors, the typical go err pattern isn't followed - must check `resp.Diagnostics.Err()`
-	configureProviderResp := provider.Configure(providers.ConfigureRequest{
-		Config: cty.ObjectVal(configValueMap),
-	})
-	if configureProviderResp.Diagnostics.Err() != nil {
-		log.Println(configureProviderResp.Diagnostics.Err().Error())
-		panic("Failed to configure provider")
-	}
-}
 
 // TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
 type TerraformReconciler struct {
 	provider *plugin.GRPCProvider
+	client   client.Client
 }
 
-func NewTerraformReconciler(provider *plugin.GRPCProvider) *TerraformReconciler {
+func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client) *TerraformReconciler {
 	return &TerraformReconciler{
 		provider: provider,
+		client:   client,
 	}
 }
 
-func (r *TerraformReconciler) Reconcile(crd *unstructured.Unstructured) error {
+func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, crd *unstructured.Unstructured) (*ctrl.Result, error) {
 
+	log.Info("Reconcile starting")
 	// Get the kinds terraform schema
 	kind := crd.GetKind()
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
@@ -110,55 +41,76 @@ func (r *TerraformReconciler) Reconcile(crd *unstructured.Unstructured) error {
 
 	var configValue *cty.Value
 	var deleting bool
-	if deleting = isDeleting(crd); deleting {
+	if deleting = r.isDeleting(crd); deleting {
 		// Deleting, so set a NullVal for the config
 		v := cty.NullVal(schema.Block.ImpliedType())
 		configValue = &v
 	} else {
-		ensureFinalizer(crd)
+		if err := r.ensureFinalizer(ctx, log, crd); err != nil {
+			return reconcileLogError(log, fmt.Errorf("Error adding finalizer: %s", err))
+		}
 
 		// Get the spec from the CRD
 		spec := crd.Object["spec"].(map[string]interface{})
 		jsonSpecRaw, err := json.Marshal(spec)
 		if err != nil {
-			return fmt.Errorf("Error marshalling the CRD spec to JSON: %s", err)
+			return reconcileLogError(log, fmt.Errorf("Error marshalling the CRD spec to JSON: %s", err))
 		}
 
 		// Create a TF cty.Value from the Spec JSON
-		configValue = createEmptyResourceValue(schema, "test1")
-		configValue, err = applySpecValuesToTerraformConfig(schema, configValue, string(jsonSpecRaw))
+		configValue = r.createEmptyResourceValue(schema, "test1")
+		configValue, err = r.applySpecValuesToTerraformConfig(schema, configValue, string(jsonSpecRaw))
 		if err != nil {
-			return fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err)
+			return reconcileLogError(log, fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err))
 		}
 	}
 
-	state, err := getTerraformState(crd)
+	state, err := r.getTerraformStateValue(crd, schema)
 	if err != nil {
-		return fmt.Errorf("Error getting Terraform state from CRD: %s", err)
+		return reconcileLogError(log, fmt.Errorf("Error getting Terraform state from CRD: %s", err))
 	}
-	newState, err := r.planAndApplyConfig(resourceName, *configValue, []byte(state))
+	log.Info("Terraform plan and apply...")
+	newState, err := r.planAndApplyConfig(resourceName, *configValue, state)
 	if err != nil {
-		return fmt.Errorf("Error applying changes in Terraform: %s", err)
+		return reconcileLogError(log, fmt.Errorf("Error applying changes in Terraform: %s", err))
 	}
 
-	if err := saveTerraformState(crd, newState); err != nil {
-		return fmt.Errorf("Error saving Terraform state to CRD: %s", err)
+	// Save the updated state early and as a separate operation
+	// If this state is lost then the object needs to be imported, so avoid that as far as possible
+	if err := r.saveTerraformStateValue(ctx, crd, newState); err != nil {
+		// Also, return a ctrl.Result to avoid repeated retries
+		return reconcileLogErrorWithResult(log, &ctrl.Result{}, fmt.Errorf("Error saving Terraform state to CRD: %s", err))
 	}
-	saveLastAppliedGeneration(crd)
+
+	crdPreStateChanges := crd.DeepCopy()
+	if err = r.setLastAppliedGeneration(crd); err != nil {
+		return reconcileLogError(log, fmt.Errorf("Error saving last generation applied: %s", err))
+	}
 
 	if deleting {
-		removeFinalizer(crd)
+		if err = r.removeFinalizerAndSave(ctx, log, crd); err != nil {
+			return reconcileLogError(log, fmt.Errorf("Error removing finalizer: %s", err))
+		}
 	} else {
-		// TODO - perform mapping of newState onto the CRD Status (currently hacking ID in for testing)
-		newStateMap := newState.AsValueMap()
-		crd.Object["status"] = map[string]interface{}{
-			"id": newStateMap["id"].AsString(),
+		if err = r.applyTerraformValueToCrdStatus(newState, crd); err != nil {
+			return reconcileLogError(log, fmt.Errorf("Error mapping Terraform value to CRD status: %s", err))
+		}
+		if err = r.saveResourceStatus(ctx, crdPreStateChanges, crd); err != nil {
+			return reconcileLogError(log, fmt.Errorf("Error saving CRD: %s", err))
 		}
 	}
-	return nil
+	log.Info("Reconcile completed")
+	return &ctrl.Result{}, nil
+}
+func reconcileLogError(log logr.Logger, err error) (*ctrl.Result, error) {
+	return reconcileLogErrorWithResult(log, nil, err)
+}
+func reconcileLogErrorWithResult(log logr.Logger, result *ctrl.Result, err error) (*ctrl.Result, error) {
+	log.Error(err, "Reconcile failed")
+	return result, err
 }
 
-func isDeleting(resource *unstructured.Unstructured) bool {
+func (r *TerraformReconciler) isDeleting(resource *unstructured.Unstructured) bool {
 	deleting := false
 	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
 	if gotMetadata {
@@ -168,10 +120,13 @@ func isDeleting(resource *unstructured.Unstructured) bool {
 	}
 	return false
 }
-func ensureFinalizer(resource *unstructured.Unstructured) {
+func (r *TerraformReconciler) ensureFinalizer(ctx context.Context, log logr.Logger, resource *unstructured.Unstructured) error {
+	copyResource := resource.DeepCopy()
+
 	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
 	if !gotMetadata {
 		metadata = map[string]interface{}{}
+		resource.Object["metadata"] = metadata
 	}
 	finalizers, gotFinalizers := metadata["finalizers"].([]string)
 	if !gotFinalizers {
@@ -180,69 +135,111 @@ func ensureFinalizer(resource *unstructured.Unstructured) {
 	for _, f := range finalizers {
 		if f == "tfoperatorbridge.local" {
 			// already present
-			return
+			log.Info("Finalizer - already exists")
+			return nil
 		}
 	}
+	log.Info("Finalizer - adding")
 	finalizers = append(finalizers, "tfoperatorbridge.local")
 	metadata["finalizers"] = finalizers
-	resource.Object["metadata"] = metadata
+
+	if err := r.client.Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
+		return fmt.Errorf("Error saving finalizer: %s", err)
+	}
+	return nil
 }
-func removeFinalizer(resource *unstructured.Unstructured) {
+func (r *TerraformReconciler) removeFinalizerAndSave(ctx context.Context, log logr.Logger, resource *unstructured.Unstructured) error {
+	copyResource := resource.DeepCopy()
+
 	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
 	if !gotMetadata {
 		metadata = map[string]interface{}{}
+		resource.Object["metadata"] = metadata
 	}
-	finalizers, gotFinalizers := metadata["finalizers"].([]string)
+	finalizers, gotFinalizers := metadata["finalizers"].([]interface{})
 	if !gotFinalizers {
-		finalizers = []string{}
+		finalizers = []interface{}{}
 	}
-	updatedFinalizers := []string{}
+	foundFinalizer := false
+	updatedFinalizers := []interface{}{}
 	for _, f := range finalizers {
-		if f == "tfoperatorbridge.local" {
-			log.Println("Removing finalizer")
+		if f.(string) == "tfoperatorbridge.local" {
+			log.Info("Finalizer - removing")
+			foundFinalizer = true
 		} else {
 			updatedFinalizers = append(updatedFinalizers, f)
 		}
 	}
+	if !foundFinalizer {
+		log.Info("Finalizer - not found on remove")
+		return fmt.Errorf("Finalizer not found on remove")
+	}
 	metadata["finalizers"] = updatedFinalizers
-	resource.Object["metadata"] = metadata
+	if err := r.client.Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
+		return fmt.Errorf("Error removing finalizer: %s", err)
+	}
+	return nil
 }
-func getTerraformState(resource *unstructured.Unstructured) ([]byte, error) {
-	annotations := resource.GetAnnotations()
-	if annotations != nil {
-		if stateString, exists := annotations["tfstate"]; exists {
-			state, err := base64.StdEncoding.DecodeString(stateString)
-			if err != nil {
-				return []byte{}, err
+func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unstructured, schema providers.Schema) (*cty.Value, error) {
+	status, gotStatus := resource.Object["status"].(map[string]interface{})
+	if gotStatus {
+		tfOperatorState, gotTFOperatorState := status["_tfoperator"].(map[string]interface{})
+		if gotTFOperatorState {
+			tfStateString, gotTfState := tfOperatorState["tfState"].(string)
+			if gotTfState {
+				unmashaledState, err := ctyjson.Unmarshal([]byte(tfStateString), schema.Block.ImpliedType())
+				if err != nil {
+					return nil, err
+				}
+				return &unmashaledState, nil
 			}
-			return state, nil
 		}
 	}
-	return []byte{}, nil
+	emptyValue := schema.Block.EmptyValue()
+	return &emptyValue, nil
 }
-func saveTerraformState(resource *unstructured.Unstructured, state *cty.Value) error {
+
+//getCrdStatusMap gets the status property initialising if required
+func (r *TerraformReconciler) getCrdStatusMap(resource *unstructured.Unstructured) map[string]interface{} {
+	status, gotStatus := resource.Object["status"].(map[string]interface{})
+	if !gotStatus {
+		status = map[string]interface{}{}
+		resource.Object["status"] = status
+	}
+	return status
+}
+
+//getTfOperatorStatusMap gets the status._tfoperator property initialising if required
+func (r *TerraformReconciler) getTfOperatorStatusMap(resource *unstructured.Unstructured) map[string]interface{} {
+	status := r.getCrdStatusMap(resource)
+	tfOperatorState, gotTFOperatorState := status["_tfoperator"].(map[string]interface{})
+	if !gotTFOperatorState {
+		tfOperatorState = map[string]interface{}{}
+		status["_tfoperator"] = tfOperatorState
+	}
+	return tfOperatorState
+}
+func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resource *unstructured.Unstructured, state *cty.Value) error {
+	copyResource := resource.DeepCopy()
 	serializedState, err := ctyjson.Marshal(*state, state.Type())
 	if err != nil {
 		return err
 	}
-	annotations := resource.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
+	tfOperatorState := r.getTfOperatorStatusMap(resource)
+	tfOperatorState["tfState"] = string(serializedState)
+
+	if err := r.client.Status().Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
+		return fmt.Errorf("Error saving tfState: %s", err)
 	}
-	annotations["tfstate"] = base64.StdEncoding.EncodeToString(serializedState)
-	resource.SetAnnotations(annotations)
 	return nil
 }
-func saveLastAppliedGeneration(resource *unstructured.Unstructured) {
+func (r *TerraformReconciler) setLastAppliedGeneration(resource *unstructured.Unstructured) error {
 	gen := resource.GetGeneration()
-	annotations := resource.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	annotations["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
-	resource.SetAnnotations(annotations)
+	tfOperatorState := r.getTfOperatorStatusMap(resource)
+	tfOperatorState["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
+	return nil
 }
-func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
+func (r *TerraformReconciler) createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
 	emptyValue := schema.Block.EmptyValue()
 	valueMap := emptyValue.AsValueMap()
 	valueMap["display_name"] = cty.StringVal(resourceName)
@@ -250,7 +247,7 @@ func createEmptyResourceValue(schema providers.Schema, resourceName string) *cty
 	return &value
 }
 
-func applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
+func (r *TerraformReconciler) applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
 	valueMap := originalValue.AsValueMap()
 
 	mappedNames := map[string]bool{}
@@ -262,7 +259,7 @@ func applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *ct
 	for name, attribute := range schema.Block.Attributes {
 		jsonVal, gotJsonVal := jsonData[name]
 		if gotJsonVal {
-			v, err := getTerraformValueFromInterface(attribute.Type, jsonVal)
+			v, err := r.getTerraformValueFromInterface(attribute.Type, jsonVal)
 			if err != nil {
 				return nil, fmt.Errorf("Error getting value for %q: %s", name, err)
 			}
@@ -271,7 +268,7 @@ func applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *ct
 		}
 	}
 	unmappedNames := []string{}
-	for jsonName, _ := range jsonData {
+	for jsonName := range jsonData {
 		if !mappedNames[jsonName] {
 			unmappedNames = append(unmappedNames, jsonName)
 		}
@@ -287,7 +284,7 @@ func applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *ct
 	return &newValue, nil
 }
 
-func getTerraformValueFromInterface(t cty.Type, value interface{}) (*cty.Value, error) {
+func (r *TerraformReconciler) getTerraformValueFromInterface(t cty.Type, value interface{}) (*cty.Value, error) {
 	// TODO handle other types: bool, int, float, list, ....
 	if t.Equals(cty.String) {
 		sv, ok := value.(string)
@@ -311,7 +308,7 @@ func getTerraformValueFromInterface(t cty.Type, value interface{}) (*cty.Value, 
 		}
 		resultMap := map[string]cty.Value{}
 		for k, v := range mv {
-			mapValue, err := getTerraformValueFromInterface(*elementType, v)
+			mapValue, err := r.getTerraformValueFromInterface(*elementType, v)
 			if err != nil {
 				return nil, fmt.Errorf("Error getting map value for property %q: %v", k, v)
 			}
@@ -324,33 +321,24 @@ func getTerraformValueFromInterface(t cty.Type, value interface{}) (*cty.Value, 
 	}
 }
 
-// func applyTerraformValueToCrdStatus(value *cty.Value, crd *unstructured.Unstructured) {
-// 	valueMap := value.AsValueMap()
+func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, crd *unstructured.Unstructured) error {
+	valueMap := value.AsValueMap()
 
-// 	crd.Object["status"] = map[string]interface{}{
-// 		"id": newStateMap["id"].AsString(),
-// 	}
-
-// }
-
-func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, stateSerialized []byte) (*cty.Value, error) {
-	schema := r.provider.GetSchema().ResourceTypes[resourceName]
-	var state cty.Value
-	if len(stateSerialized) == 0 {
-		schema := r.provider.GetSchema().ResourceTypes[resourceName]
-		state = schema.Block.EmptyValue()
-	} else {
-		unmashaledState, err := ctyjson.Unmarshal(stateSerialized, schema.Block.ImpliedType())
-		if err != nil {
-			log.Println(err)
-			panic("Failed to decode state")
-		}
-		state = unmashaledState
+	// TODO  - drive this from the CRD status schema
+	status, gotStatus := crd.Object["status"].(map[string]interface{})
+	if !gotStatus {
+		status = map[string]interface{}{}
+		crd.Object["status"] = status
 	}
+	status["id"] = valueMap["id"].AsString()
 
+	return nil
+}
+
+func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
 	planResponse := r.provider.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
-		PriorState:       state,  // State after last apply or empty if non-existent
+		PriorState:       *state, // State after last apply or empty if non-existent
 		ProposedNewState: config, // Config from CRD representing desired state
 		Config:           config, // Config from CRD representing desired state ? Unsure why duplicated but hey ho.
 	})
@@ -362,7 +350,7 @@ func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty
 
 	applyResponse := r.provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
 		TypeName:     resourceName,              // Working theory:
-		PriorState:   state,                     // This is the state from the .tfstate file before the apply is made
+		PriorState:   *state,                    // This is the state from the .tfstate file before the apply is made
 		Config:       config,                    // The current HCL configuration or what would be in your terraform file
 		PlannedState: planResponse.PlannedState, // The result of a plan (read / diff) between HCL Config and actual resource state
 	})
@@ -372,4 +360,14 @@ func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty
 	}
 
 	return &applyResponse.NewState, nil
+}
+
+func (r *TerraformReconciler) saveResourceStatus(ctx context.Context, originalResource *unstructured.Unstructured, resource *unstructured.Unstructured) error {
+
+	err := r.client.Status().Patch(ctx, resource, client.MergeFrom(originalResource))
+	if err != nil {
+		//log.Error(err, "Failed saving resource")
+		return fmt.Errorf("Failed saving resource %q %q %w", resource.GetNamespace(), resource.GetName(), err)
+	}
+	return nil
 }

@@ -11,18 +11,18 @@ import (
 	"github.com/hashicorp/terraform/plugin/discovery"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 func main() {
 	provider := getInstanceOfAzureRMProvider()
 
 	// Example talking to the Azure resources using the provider
-	configureProvider(provider)
-	// exampleChangesToResourceGroup(provider)
+	log := ctrl.Log.WithName("main")
+	configureProvider(log, provider)
 
 	// Example creating CRDs in K8s with correct structure based on TF Schemas
 	resources := createCRDsForResources(provider)
-	// startSharedInformer(provider, resources)
 
 	// Start an informer to watch for crd items
 	setupControllerRuntime(provider, resources)

@@ -57,6 +57,17 @@ func createCRDsForResources(provider *plugin.GRPCProvider) []GroupVersionFull {
 		// either spec or status objects created above
 		addBlockToSchema(&statusCRD, &specCRD, "root", resource.Block)
 
+		// Add tf operator property
+		statusCRD.Properties["_tfoperator"] = spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"tfState":               *spec.StringProperty(),
+					"lastAppliedGeneration": *spec.StringProperty(),
+				},
+			},
+		}
+
 		// Create a top level schema to represent the resource and add spec and status to it.
 		def := spec.Schema{}
 		def.Type = spec.StringOrArray{"object"}
@@ -189,6 +200,9 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 				},
 				Validation: &apiextensionsv1beta1.CustomResourceValidation{
 					OpenAPIV3Schema: &jsonSchemaProps,
+				},
+				Subresources: &apiextensionsv1beta1.CustomResourceSubresources{
+					Status: &apiextensionsv1beta1.CustomResourceSubresourceStatus{},
 				},
 			},
 		}

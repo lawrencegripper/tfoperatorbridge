@@ -128,7 +128,7 @@ var _ = Describe("When working with a resource group", func() {
 				Expect(err).To(BeNil())
 			}
 			return false
-		}, time.Second*120, time.Second*10).Should(BeTrue())
+		}, time.Minute*5, time.Second*10).Should(BeTrue())
 
 		By("deleting the resource group CRD")
 		err = k8sClient.Resource(gvrResourceGroup).Namespace("default").Delete(context.TODO(), resourceGroupName, metav1.DeleteOptions{})
