@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/hashicorp/go-hclog"
+	goplugin "github.com/hashicorp/go-plugin"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/plugin/discovery"
 	"k8s.io/client-go/rest"
@@ -33,8 +35,15 @@ func getInstanceOfAzureRMProvider() *plugin.GRPCProvider {
 	if pluginMeta.Count() < 1 {
 		panic("no plugins found")
 	}
-	pluginClient := plugin.Client(pluginMeta.Newest())
+	clientConfig := plugin.ClientConfig(pluginMeta.Newest())
+	// Don't log provider details unless provider log is enabled by env
+	if _, exists := os.LookupEnv("ENABLE_PROVIDER_LOG"); !exists {
+		clientConfig.Logger = hclog.NewNullLogger()
+	}
+	pluginClient := goplugin.NewClient(clientConfig)
+
 	rpcClient, err := pluginClient.Client()
+
 	if err != nil {
 		panic(fmt.Errorf("Failed to initialize plugin: %s", err))
 	}

@@ -30,6 +30,11 @@ Users should be able to deploy the bridge into their cluster with a provider sel
 1. Copy `.env-template` to `.env` and populate the fields with your SP/Subscription details
 1. `make run`
 
+## Config 
+
+`ENABLE_PROVIDER_LOG` To enable full provider logs
+`SKIP_CRD_CREATION` To skip CRD creation at startup
+
 ## Notes
 
 - OpenAPI Generation in K8s https://github.com/kubernetes/kube-openapi/blob/master/pkg/generators/openapi.go
