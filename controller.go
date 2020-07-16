@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"time"
 
 	"github.com/hashicorp/terraform/plugin"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -43,22 +46,32 @@ func (r *controller) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	err := r.Client.Get(ctx, req.NamespacedName, resource)
 	if err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
 		log.Error(err, "Failed getting resource", "req", req.NamespacedName)
+		return ctrl.Result{}, fmt.Errorf("Failed getting resource %q %w", req.NamespacedName.String(), err)
 	}
 	gen := resource.GetGeneration()
 	log.Info("*** Reconciler called", "namespace", resource.GetNamespace(), "kind", resource.GetKind(), "name", resource.GetName(), "generation", gen)
 
 	// Note this mutate the resource state
 	// Todo: Return resource to make this clear from method maybe?
-	r.tfReconciler.Reconcile(resource)
+	err = r.tfReconciler.Reconcile(resource)
+	if err != nil {
+		log.Error(err, "Failed TF Reconciler on resource", "req", req.NamespacedName, err)
+		return ctrl.Result{}, fmt.Errorf("Failed TF Reconciler on resource %q %w", req.NamespacedName.String(), err)
+	}
 
 	err = r.Client.Update(ctx, resource)
 	if err != nil {
 		log.Error(err, "Failed saving resource")
-		panic("Error updating CRD instance (Add)") // TODO handle retries
+		return ctrl.Result{}, fmt.Errorf("Failed saving resource %q %w", req.NamespacedName.String(), err)
 	}
 
-	return ctrl.Result{}, nil
+	// Detect drift by checking resource every x mins
+	// Todo: Make requeue time configurable
+	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
 func runtimeObjFromGVK(r schema.GroupVersionKind) runtime.Object {
