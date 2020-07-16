@@ -1,3 +1,5 @@
+build: 
+	go build .
 
 run: kind-create terraform-hack-init
 	go run .
