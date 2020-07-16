@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func createCRDsForResources(provider *plugin.GRPCProvider) []schema.GroupVersionResource {
+func createCRDsForResources(provider *plugin.GRPCProvider) []GroupVersionFull {
 	// Status: This runs but very little validation of the outputted openAPI apecs has been done. Bugs are likely
 
 	tfSchema := provider.GetSchema()
@@ -32,6 +32,13 @@ func createCRDsForResources(provider *plugin.GRPCProvider) []schema.GroupVersion
 	// 1. Split terraform computed values into `status` of the CRD as these are unsettable by user
 	// 2. Put required and optional params into the `spec` of the CRD. Setting required status accordinly.
 	for resourceName, resource := range tfSchema.ResourceTypes {
+
+		// Skip any resources which aren't valid DNS names as they're too long
+		if len(resourceName) > 63 {
+			fmt.Printf("Skipping invalid resource - name too long %q", resourceName)
+			continue
+		}
+
 		// Create objects for both the spec and status blocks
 		specCRD := spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -135,10 +142,16 @@ func getSchemaForType(name string, item *cty.Type) *spec.Schema {
 	return property
 }
 
+// Todo: Check if this type already existing of if simplier way to handle tracking both Kind and Resource
+type GroupVersionFull struct {
+	GroupVersionKind     schema.GroupVersionKind
+	GroupVersionResource schema.GroupVersionResource
+}
+
 // k8s stuff
-func installCRDs(resources []spec.Schema, providerName, providerVersion string) []schema.GroupVersionResource {
+func installCRDs(resources []spec.Schema, providerName, providerVersion string) []GroupVersionFull {
 	clientConfig := getK8sClientConfig()
-	gvrArray := make([]schema.GroupVersionResource, 0, len(resources))
+	gvArray := make([]GroupVersionFull, 0, len(resources))
 
 	// create the clientset
 	apiextensionsClientSet, err := apiextensionsclientset.NewForConfig(clientConfig)
@@ -157,15 +170,9 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 		// Create the names for the CRD
 		kind := strings.Replace(strings.Replace(resource.Description, "_", "-", -1), "azurerm-", "", -1)
 		groupName := providerName + ".tfb.local"
-		plural := kind + "s"
+		resource := kind + "s"
 		version := providerVersion
-		crdName := plural + "." + groupName
-
-		gvrArray = append(gvrArray, schema.GroupVersionResource{
-			Group:    groupName,
-			Resource: plural,
-			Version:  version,
-		})
+		crdName := resource + "." + groupName
 
 		crd := &apiextensionsv1beta1.CustomResourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
@@ -177,7 +184,7 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 				Version: version,
 				Scope:   apiextensionsv1beta1.NamespaceScoped,
 				Names: apiextensionsv1beta1.CustomResourceDefinitionNames{
-					Plural: plural,
+					Plural: resource,
 					Kind:   kind,
 				},
 				Validation: &apiextensionsv1beta1.CustomResourceValidation{
@@ -196,10 +203,24 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 
 		if err != nil {
 			log.Println(err.Error())
+			continue
 		}
+
+		// If CRD was successfull created then add it to GV array
+		gvArray = append(gvArray, GroupVersionFull{
+			GroupVersionResource: schema.GroupVersionResource{
+				Group:    groupName,
+				Resource: resource,
+				Version:  version,
+			},
+			GroupVersionKind: schema.GroupVersionKind{
+				Group:   groupName,
+				Version: version,
+				Kind:    kind,
+			}})
 	}
 
-	return gvrArray
+	return gvArray
 }
 
 func createCustomResourceDefinition(namespace string, clientSet apiextensionsclientset.Interface, crd *apiextensionsv1beta1.CustomResourceDefinition) (*apiextensionsv1beta1.CustomResourceDefinition, error) {
