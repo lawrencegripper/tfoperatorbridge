@@ -51,7 +51,13 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		}
 
 		// Get the spec from the CRD
-		spec := crd.Object["spec"].(map[string]interface{})
+		spec, gotSpec, err := unstructured.NestedMap(crd.Object, "spec")
+		if err != nil {
+			return reconcileLogError(log, fmt.Errorf("Error retrieving CRD spec: %s", err))
+		}
+		if !gotSpec {
+			return reconcileLogError(log, fmt.Errorf("Error - CRD spec not found"))
+		}
 		jsonSpecRaw, err := json.Marshal(spec)
 		if err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error marshalling the CRD spec to JSON: %s", err))
@@ -111,27 +117,12 @@ func reconcileLogErrorWithResult(log logr.Logger, result *ctrl.Result, err error
 }
 
 func (r *TerraformReconciler) isDeleting(resource *unstructured.Unstructured) bool {
-	deleting := false
-	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
-	if gotMetadata {
-		if _, deleting = metadata["deletionTimestamp"]; deleting {
-			return true
-		}
-	}
-	return false
+	return resource.GetDeletionTimestamp() != nil
 }
 func (r *TerraformReconciler) ensureFinalizer(ctx context.Context, log logr.Logger, resource *unstructured.Unstructured) error {
 	copyResource := resource.DeepCopy()
 
-	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
-	if !gotMetadata {
-		metadata = map[string]interface{}{}
-		resource.Object["metadata"] = metadata
-	}
-	finalizers, gotFinalizers := metadata["finalizers"].([]string)
-	if !gotFinalizers {
-		finalizers = []string{}
-	}
+	finalizers := resource.GetFinalizers()
 	for _, f := range finalizers {
 		if f == "tfoperatorbridge.local" {
 			// already present
@@ -141,7 +132,7 @@ func (r *TerraformReconciler) ensureFinalizer(ctx context.Context, log logr.Logg
 	}
 	log.Info("Finalizer - adding")
 	finalizers = append(finalizers, "tfoperatorbridge.local")
-	metadata["finalizers"] = finalizers
+	resource.SetFinalizers(finalizers)
 
 	if err := r.client.Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
 		return fmt.Errorf("Error saving finalizer: %s", err)
@@ -151,19 +142,11 @@ func (r *TerraformReconciler) ensureFinalizer(ctx context.Context, log logr.Logg
 func (r *TerraformReconciler) removeFinalizerAndSave(ctx context.Context, log logr.Logger, resource *unstructured.Unstructured) error {
 	copyResource := resource.DeepCopy()
 
-	metadata, gotMetadata := resource.Object["metadata"].(map[string]interface{})
-	if !gotMetadata {
-		metadata = map[string]interface{}{}
-		resource.Object["metadata"] = metadata
-	}
-	finalizers, gotFinalizers := metadata["finalizers"].([]interface{})
-	if !gotFinalizers {
-		finalizers = []interface{}{}
-	}
+	finalizers := resource.GetFinalizers()
 	foundFinalizer := false
-	updatedFinalizers := []interface{}{}
+	updatedFinalizers := []string{}
 	for _, f := range finalizers {
-		if f.(string) == "tfoperatorbridge.local" {
+		if f == "tfoperatorbridge.local" {
 			log.Info("Finalizer - removing")
 			foundFinalizer = true
 		} else {
@@ -174,59 +157,37 @@ func (r *TerraformReconciler) removeFinalizerAndSave(ctx context.Context, log lo
 		log.Info("Finalizer - not found on remove")
 		return fmt.Errorf("Finalizer not found on remove")
 	}
-	metadata["finalizers"] = updatedFinalizers
+	resource.SetFinalizers(updatedFinalizers)
 	if err := r.client.Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
 		return fmt.Errorf("Error removing finalizer: %s", err)
 	}
 	return nil
 }
 func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unstructured, schema providers.Schema) (*cty.Value, error) {
-	status, gotStatus := resource.Object["status"].(map[string]interface{})
-	if gotStatus {
-		tfOperatorState, gotTFOperatorState := status["_tfoperator"].(map[string]interface{})
-		if gotTFOperatorState {
-			tfStateString, gotTfState := tfOperatorState["tfState"].(string)
-			if gotTfState {
-				unmashaledState, err := ctyjson.Unmarshal([]byte(tfStateString), schema.Block.ImpliedType())
-				if err != nil {
-					return nil, err
-				}
-				return &unmashaledState, nil
-			}
+	tfStateString, gotTfState, err := unstructured.NestedString(resource.Object, "status", "_tfoperator", "tfState")
+	if err != nil {
+		return nil, err
+	}
+	if gotTfState {
+		unmashaledState, err := ctyjson.Unmarshal([]byte(tfStateString), schema.Block.ImpliedType())
+		if err != nil {
+			return nil, err
 		}
+		return &unmashaledState, nil
 	}
 	emptyValue := schema.Block.EmptyValue()
 	return &emptyValue, nil
-}
-
-//getCrdStatusMap gets the status property initialising if required
-func (r *TerraformReconciler) getCrdStatusMap(resource *unstructured.Unstructured) map[string]interface{} {
-	status, gotStatus := resource.Object["status"].(map[string]interface{})
-	if !gotStatus {
-		status = map[string]interface{}{}
-		resource.Object["status"] = status
-	}
-	return status
-}
-
-//getTfOperatorStatusMap gets the status._tfoperator property initialising if required
-func (r *TerraformReconciler) getTfOperatorStatusMap(resource *unstructured.Unstructured) map[string]interface{} {
-	status := r.getCrdStatusMap(resource)
-	tfOperatorState, gotTFOperatorState := status["_tfoperator"].(map[string]interface{})
-	if !gotTFOperatorState {
-		tfOperatorState = map[string]interface{}{}
-		status["_tfoperator"] = tfOperatorState
-	}
-	return tfOperatorState
 }
 func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resource *unstructured.Unstructured, state *cty.Value) error {
 	copyResource := resource.DeepCopy()
 	serializedState, err := ctyjson.Marshal(*state, state.Type())
 	if err != nil {
-		return err
+		return fmt.Errorf("Error marshalling state: %s", err)
 	}
-	tfOperatorState := r.getTfOperatorStatusMap(resource)
-	tfOperatorState["tfState"] = string(serializedState)
+	err = unstructured.SetNestedField(resource.Object, string(serializedState), "status", "_tfoperator", "tfState")
+	if err != nil {
+		return fmt.Errorf("Error setting tfState property: %s", err)
+	}
 
 	if err := r.client.Status().Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
 		return fmt.Errorf("Error saving tfState: %s", err)
@@ -235,8 +196,10 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 }
 func (r *TerraformReconciler) setLastAppliedGeneration(resource *unstructured.Unstructured) error {
 	gen := resource.GetGeneration()
-	tfOperatorState := r.getTfOperatorStatusMap(resource)
-	tfOperatorState["lastAppliedGeneration"] = strconv.FormatInt(gen, 10)
+	err := unstructured.SetNestedField(resource.Object, strconv.FormatInt(gen, 10), "status", "_tfoperator", "lastAppliedGeneration")
+	if err != nil {
+		return fmt.Errorf("Error setting lastAppliedGeneration property: %s", err)
+	}
 	return nil
 }
 func (r *TerraformReconciler) createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
@@ -324,13 +287,20 @@ func (r *TerraformReconciler) getTerraformValueFromInterface(t cty.Type, value i
 func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, crd *unstructured.Unstructured) error {
 	valueMap := value.AsValueMap()
 
-	// TODO  - drive this from the CRD status schema
-	status, gotStatus := crd.Object["status"].(map[string]interface{})
+	status, gotStatus, err := unstructured.NestedMap(crd.Object, "status")
+	if err != nil {
+		return fmt.Errorf("Error getting status field: %s", err)
+	}
 	if !gotStatus {
 		status = map[string]interface{}{}
-		crd.Object["status"] = status
 	}
+	// TODO  - drive this from the CRD status schema
 	status["id"] = valueMap["id"].AsString()
+
+	err = unstructured.SetNestedMap(crd.Object, status, "status")
+	if err != nil {
+		return fmt.Errorf("Error setting status field: %s", err)
+	}
 
 	return nil
 }
