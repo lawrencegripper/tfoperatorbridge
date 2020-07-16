@@ -3,6 +3,7 @@ module github.com/lawrencegripper/tfoperatorbridge
 go 1.14
 
 require (
+	github.com/go-logr/logr v0.1.0
 	github.com/go-openapi/spec v0.19.8
 	github.com/hashicorp/go-hclog v0.0.0-20181001195459-61d530d6c27f
 	github.com/hashicorp/go-plugin v1.3.0
