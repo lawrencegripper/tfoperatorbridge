@@ -13,7 +13,7 @@ terraform-hack-init:
 
 integration-tests:
 	# TODO automatically run the operator
-	ginkgo --progress
+	ginkgo  -v
 
 create-rg:
 	kubectl apply -f ./examples/resourceGroup.yaml
