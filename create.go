@@ -62,6 +62,7 @@ func createCRDsForResources(provider *plugin.GRPCProvider) []GroupVersionFull {
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
+					"provisioningState":     *spec.StringProperty(),
 					"tfState":               *spec.StringProperty(),
 					"lastAppliedGeneration": *spec.StringProperty(),
 				},

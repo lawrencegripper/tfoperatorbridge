@@ -3,17 +3,22 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -65,9 +70,15 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 
 		// Create a TF cty.Value from the Spec JSON
 		configValue = r.createEmptyResourceValue(schema, "test1")
-		configValue, err = r.applySpecValuesToTerraformConfig(schema, configValue, string(jsonSpecRaw))
+		var success bool
+		configValue, success, err = r.applySpecValuesToTerraformConfig(ctx, schema, configValue, string(jsonSpecRaw))
 		if err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err))
+		}
+		if !success {
+			// unable to retrieve referenced values - retry later
+			log.Info("Reconcile - requeue: unable to retrieve referenced value")
+			return &ctrl.Result{RequeueAfter: time.Second * 30}, nil // TODO - configurable retry time?
 		}
 	}
 
@@ -98,6 +109,9 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 			return reconcileLogError(log, fmt.Errorf("Error removing finalizer: %s", err))
 		}
 	} else {
+		if err = r.setProvisioningState(crd, "Created"); err != nil { // TODO define the states!
+			return reconcileLogError(log, fmt.Errorf("Error saving provisioning state applied: %s", err))
+		}
 		if err = r.applyTerraformValueToCrdStatus(newState, crd); err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error mapping Terraform value to CRD status: %s", err))
 		}
@@ -202,6 +216,23 @@ func (r *TerraformReconciler) setLastAppliedGeneration(resource *unstructured.Un
 	}
 	return nil
 }
+func (r *TerraformReconciler) getProvisioningState(resource *unstructured.Unstructured) (string, error) {
+	val, gotVal, err := unstructured.NestedString(resource.Object, "status", "_tfoperator", "provisioningState")
+	if err != nil {
+		return "", fmt.Errorf("Error setting provisioningState property: %s", err)
+	}
+	if !gotVal {
+		val = ""
+	}
+	return val, nil
+}
+func (r *TerraformReconciler) setProvisioningState(resource *unstructured.Unstructured, state string) error {
+	err := unstructured.SetNestedField(resource.Object, state, "status", "_tfoperator", "provisioningState")
+	if err != nil {
+		return fmt.Errorf("Error setting provisioningState property: %s", err)
+	}
+	return nil
+}
 func (r *TerraformReconciler) createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
 	emptyValue := schema.Block.EmptyValue()
 	valueMap := emptyValue.AsValueMap()
@@ -210,21 +241,29 @@ func (r *TerraformReconciler) createEmptyResourceValue(schema providers.Schema, 
 	return &value
 }
 
-func (r *TerraformReconciler) applySpecValuesToTerraformConfig(schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, error) {
+// applySpecValuesToTerraformConfig
+// returns
+//  cty.Value - the applied value
+//  bool      - true if all values were applied, false if referenced values were not available
+//  error     - non-nil if an error occurred
+func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Context, schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, bool, error) {
 	valueMap := originalValue.AsValueMap()
 
 	mappedNames := map[string]bool{}
 	var jsonData map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonString), &jsonData); err != nil {
-		return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
+		return nil, false, fmt.Errorf("Error unmarshalling JSON data: %s", err)
 	}
 
 	for name, attribute := range schema.Block.Attributes {
 		jsonVal, gotJsonVal := jsonData[name]
 		if gotJsonVal {
-			v, err := r.getTerraformValueFromInterface(attribute.Type, jsonVal)
+			v, success, err := r.getTerraformValueFromInterface(ctx, attribute.Type, jsonVal)
 			if err != nil {
-				return nil, fmt.Errorf("Error getting value for %q: %s", name, err)
+				return nil, false, fmt.Errorf("Error getting value for %q: %s", name, err)
+			}
+			if !success {
+				return nil, false, nil
 			}
 			valueMap[name] = *v
 			mappedNames[name] = true
@@ -240,48 +279,130 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(schema providers.
 	// TODO handle schema.Block.BlockTypes as well as schema.Block.Attributes
 
 	if len(unmappedNames) > 0 {
-		return nil, fmt.Errorf("Unmapped values in JSON: %s", strings.Join(unmappedNames, ","))
+		return nil, false, fmt.Errorf("Unmapped values in JSON: %s", strings.Join(unmappedNames, ","))
 	}
 
 	newValue := cty.ObjectVal(valueMap)
-	return &newValue, nil
+	return &newValue, true, nil
 }
 
-func (r *TerraformReconciler) getTerraformValueFromInterface(t cty.Type, value interface{}) (*cty.Value, error) {
+// getTerraformValueFromInterface
+// returns
+//  cty.Value - the applied value
+//  bool      - true if all values were applied, false if referenced values were not available
+//  error     - non-nil if an error occurred
+func (r *TerraformReconciler) getTerraformValueFromInterface(ctx context.Context, t cty.Type, value interface{}) (*cty.Value, bool, error) {
 	// TODO handle other types: bool, int, float, list, ....
 	if t.Equals(cty.String) {
 		sv, ok := value.(string)
 		if !ok {
-			return nil, fmt.Errorf("Invalid value '%q' - expected 'string'", value)
+			return nil, false, fmt.Errorf("Invalid value '%q' - expected 'string'", value)
+		}
+		if strings.HasPrefix(sv, "`") { // TODO Consider making the prefix configurable
+			referencedValue, gotReferencedValue, err := r.getReferencedObjectValue(ctx, sv)
+			if err != nil {
+				return nil, false, fmt.Errorf("Error looking up referenced value: %s", err)
+			}
+			if !gotReferencedValue {
+				// referenced value couldn't be retrieved - retry later
+				return nil, false, nil
+			}
+			sv = referencedValue
 		}
 		val := cty.StringVal(sv)
-		return &val, nil
+		return &val, true, nil
 	} else if t.Equals(cty.Bool) {
 		bv, ok := value.(bool)
 		if !ok {
-			return nil, fmt.Errorf("Invalid value '%q' - expected 'bool'", value)
+			return nil, false, fmt.Errorf("Invalid value '%q' - expected 'bool'", value)
 		}
 		val := cty.BoolVal(bv)
-		return &val, nil
+		return &val, true, nil
 	} else if t.IsMapType() {
 		elementType := t.MapElementType()
 		mv, ok := value.(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("Invalid value '%q' - expected 'map[string]interface{}'", value)
+			return nil, false, fmt.Errorf("Invalid value '%q' - expected 'map[string]interface{}'", value)
 		}
 		resultMap := map[string]cty.Value{}
 		for k, v := range mv {
-			mapValue, err := r.getTerraformValueFromInterface(*elementType, v)
+			mapValue, success, err := r.getTerraformValueFromInterface(ctx, *elementType, v)
 			if err != nil {
-				return nil, fmt.Errorf("Error getting map value for property %q: %v", k, v)
+				return nil, false, fmt.Errorf("Error getting map value for property %q: %v", k, v)
+			}
+			if !success {
+				return nil, false, nil
 			}
 			resultMap[k] = *mapValue
 		}
 		result := cty.MapVal(resultMap)
-		return &result, nil
+		return &result, true, nil
 	} else {
-		return nil, fmt.Errorf("Unhandled type: %v", t.GoString())
+		return nil, false, fmt.Errorf("Unhandled type: %v", t.GoString())
 	}
+}
+
+// getReferencedObjectValue
+// returns
+//  string    - the value of the property in the specified resource
+//  bool      - true if the value is read, false if the referenced value is not available
+//  error     - non-nil if an error occurred
+func (r *TerraformReconciler) getReferencedObjectValue(ctx context.Context, referenceString string) (string, bool, error) {
+	// TODO - parse the reference
+	// e.g. group:version:kind:namespace:name:propertypath
+
+	if strings.HasPrefix(referenceString, "`") {
+		referenceString = strings.TrimPrefix(referenceString, "`")
+	} else {
+		return "", false, fmt.Errorf("input does not begin with the backtick escape character")
+	}
+	referenceString = strings.TrimSpace(referenceString)
+
+	referenceParts := strings.Split(referenceString, ":")
+	if len(referenceParts) != 6 {
+		return "", false, fmt.Errorf("input should be in the format group:version:kind:namespace:name:propertypath. Got %q", referenceString)
+	}
+
+	group := referenceParts[0]
+	version := referenceParts[1]
+	kind := referenceParts[2]
+	namespacedName := types.NamespacedName{
+		Namespace: referenceParts[3],
+		Name:      referenceParts[4],
+	}
+	propertyPath := referenceParts[5]
+
+	resource := &unstructured.Unstructured{}
+	resource.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   group,
+		Version: version,
+		Kind:    kind,
+	})
+
+	err := r.client.Get(ctx, namespacedName, resource)
+	if err != nil {
+		var statusError *k8sErrors.StatusError
+		if errors.As(err, &statusError) {
+			if statusError.ErrStatus.Code == 404 {
+				// not found - might not have been created
+				// return nil error as this should fall into the controlled retry
+				return "", false, nil
+			}
+		}
+		return "", false, fmt.Errorf("Error getting referenced resource: %s", err)
+	}
+
+	provisioningState, err := r.getProvisioningState(resource)
+	if err != nil {
+		return "", false, fmt.Errorf("Error getting provisioningState for referenced resource : %s", err)
+	}
+	if provisioningState != "Created" {
+		return "", false, nil
+	}
+
+	propertyPathParts := strings.Split(propertyPath, ".")
+	value, gotValue, err := unstructured.NestedString(resource.Object, propertyPathParts...)
+	return value, gotValue, err
 }
 
 func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, crd *unstructured.Unstructured) error {
