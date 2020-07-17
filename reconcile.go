@@ -36,6 +36,18 @@ func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client)
 	}
 }
 
+type GetReferencedObjectValueResult struct {
+	Value         *string // nil if not retrieved
+	Error         error
+	StatusMessage string // contains info message when Value is nil but there is not an error
+}
+type GetTerraformValueResult struct {
+	Property      string
+	Value         *cty.Value
+	Error         error
+	StatusMessage string
+}
+
 func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, crd *unstructured.Unstructured) (*ctrl.Result, error) {
 
 	log.Info("Reconcile starting")
@@ -70,14 +82,14 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 
 		// Create a TF cty.Value from the Spec JSON
 		configValue = r.createEmptyResourceValue(schema, "test1")
-		var success bool
-		configValue, success, err = r.applySpecValuesToTerraformConfig(ctx, schema, configValue, string(jsonSpecRaw))
+		var statusMessage string
+		configValue, statusMessage, err = r.applySpecValuesToTerraformConfig(ctx, schema, configValue, string(jsonSpecRaw))
 		if err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err))
 		}
-		if !success {
+		if configValue == nil {
 			// unable to retrieve referenced values - retry later
-			log.Info("Reconcile - requeue: unable to retrieve referenced value")
+			log.Info(fmt.Sprintf("Reconcile - requeing. Unable to apply spec: %s", statusMessage))
 			return &ctrl.Result{RequeueAfter: time.Second * 30}, nil // TODO - configurable retry time?
 		}
 	}
@@ -243,29 +255,33 @@ func (r *TerraformReconciler) createEmptyResourceValue(schema providers.Schema, 
 
 // applySpecValuesToTerraformConfig
 // returns
-//  cty.Value - the applied value
-//  bool      - true if all values were applied, false if referenced values were not available
+//  cty.Value - the applied value or nil if not successful
+//  string    - a status message if we failed to apply without an error condition
 //  error     - non-nil if an error occurred
-func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Context, schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, bool, error) {
+func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Context, schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, string, error) {
 	valueMap := originalValue.AsValueMap()
 
 	mappedNames := map[string]bool{}
 	var jsonData map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonString), &jsonData); err != nil {
-		return nil, false, fmt.Errorf("Error unmarshalling JSON data: %s", err)
+		return nil, "", fmt.Errorf("Error unmarshalling JSON data: %s", err)
 	}
 
 	for name, attribute := range schema.Block.Attributes {
 		jsonVal, gotJsonVal := jsonData[name]
 		if gotJsonVal {
-			v, success, err := r.getTerraformValueFromInterface(ctx, attribute.Type, jsonVal)
-			if err != nil {
-				return nil, false, fmt.Errorf("Error getting value for %q: %s", name, err)
+			getTerraformValueResult := r.getTerraformValueFromInterface(ctx, attribute.Type, jsonVal)
+			propName := name
+			if getTerraformValueResult.Property != "" {
+				propName = propName + "." + getTerraformValueResult.Property
 			}
-			if !success {
-				return nil, false, nil
+			if getTerraformValueResult.Error != nil {
+				return nil, "", fmt.Errorf("Error getting value for %q: %s", propName, getTerraformValueResult.Error)
 			}
-			valueMap[name] = *v
+			if getTerraformValueResult.Value == nil {
+				return nil, fmt.Sprintf("Unabile to retrieve value for %q: %s", propName, getTerraformValueResult.StatusMessage), nil
+			}
+			valueMap[name] = *getTerraformValueResult.Value
 			mappedNames[name] = true
 		}
 	}
@@ -279,88 +295,97 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Conte
 	// TODO handle schema.Block.BlockTypes as well as schema.Block.Attributes
 
 	if len(unmappedNames) > 0 {
-		return nil, false, fmt.Errorf("Unmapped values in JSON: %s", strings.Join(unmappedNames, ","))
+		return nil, "", fmt.Errorf("Unmapped values in JSON: %s", strings.Join(unmappedNames, ","))
 	}
 
 	newValue := cty.ObjectVal(valueMap)
-	return &newValue, true, nil
+	return &newValue, "", nil
 }
 
-// getTerraformValueFromInterface
-// returns
-//  cty.Value - the applied value
-//  bool      - true if all values were applied, false if referenced values were not available
-//  error     - non-nil if an error occurred
-func (r *TerraformReconciler) getTerraformValueFromInterface(ctx context.Context, t cty.Type, value interface{}) (*cty.Value, bool, error) {
+func (r *TerraformReconciler) getTerraformValueFromInterface(ctx context.Context, t cty.Type, value interface{}) GetTerraformValueResult {
 	// TODO handle other types: bool, int, float, list, ....
 	if t.Equals(cty.String) {
 		sv, ok := value.(string)
 		if !ok {
-			return nil, false, fmt.Errorf("Invalid value '%q' - expected 'string'", value)
+			return GetTerraformValueResult{Error: fmt.Errorf("Invalid value '%q' - expected 'string'", value)}
 		}
 		if strings.HasPrefix(sv, "`") { // TODO Consider making the prefix configurable
-			referencedValue, gotReferencedValue, err := r.getReferencedObjectValue(ctx, sv)
-			if err != nil {
-				return nil, false, fmt.Errorf("Error looking up referenced value: %s", err)
+			referencedObjectValueResult := r.getReferencedObjectValue(ctx, sv)
+			if referencedObjectValueResult.Error != nil {
+				return GetTerraformValueResult{
+					Error:         fmt.Errorf("Error looking up referenced value: %s", referencedObjectValueResult.Error),
+					StatusMessage: referencedObjectValueResult.StatusMessage,
+				}
 			}
-			if !gotReferencedValue {
-				// referenced value couldn't be retrieved - retry later
-				return nil, false, nil
+			if referencedObjectValueResult.Value == nil {
+				// referenced value couldn't be retrieved - return nil error to retry later
+				return GetTerraformValueResult{
+					StatusMessage: referencedObjectValueResult.StatusMessage,
+				}
 			}
-			sv = referencedValue
+			sv = *referencedObjectValueResult.Value
 		}
 		val := cty.StringVal(sv)
-		return &val, true, nil
+		return GetTerraformValueResult{Value: &val}
 	} else if t.Equals(cty.Bool) {
 		bv, ok := value.(bool)
 		if !ok {
-			return nil, false, fmt.Errorf("Invalid value '%q' - expected 'bool'", value)
+			return GetTerraformValueResult{Error: fmt.Errorf("Invalid value '%q' - expected 'bool'", value)}
 		}
 		val := cty.BoolVal(bv)
-		return &val, true, nil
+		return GetTerraformValueResult{Value: &val}
 	} else if t.IsMapType() {
 		elementType := t.MapElementType()
 		mv, ok := value.(map[string]interface{})
 		if !ok {
-			return nil, false, fmt.Errorf("Invalid value '%q' - expected 'map[string]interface{}'", value)
+			return GetTerraformValueResult{Error: fmt.Errorf("Invalid value '%q' - expected 'map[string]interface{}'", value)}
 		}
 		resultMap := map[string]cty.Value{}
 		for k, v := range mv {
-			mapValue, success, err := r.getTerraformValueFromInterface(ctx, *elementType, v)
-			if err != nil {
-				return nil, false, fmt.Errorf("Error getting map value for property %q: %v", k, v)
+			getTerraformValueResult := r.getTerraformValueFromInterface(ctx, *elementType, v)
+			propName := k
+			if getTerraformValueResult.Property != "" {
+				propName = propName + "." + getTerraformValueResult.Property
 			}
-			if !success {
-				return nil, false, nil
+			if getTerraformValueResult.Error != nil {
+				return GetTerraformValueResult{
+					Property: propName,
+					Error:    fmt.Errorf("Error getting map value for property %q: %v", k, v),
+				}
 			}
-			resultMap[k] = *mapValue
+			if getTerraformValueResult.Value == nil {
+				return GetTerraformValueResult{
+					Property:      propName,
+					StatusMessage: getTerraformValueResult.StatusMessage,
+				}
+			}
+			resultMap[k] = *getTerraformValueResult.Value
 		}
-		result := cty.MapVal(resultMap)
-		return &result, true, nil
+		val := cty.MapVal(resultMap)
+		return GetTerraformValueResult{Value: &val}
 	} else {
-		return nil, false, fmt.Errorf("Unhandled type: %v", t.GoString())
+		return GetTerraformValueResult{Error: fmt.Errorf("Unhandled type: %v", t.GoString())}
 	}
 }
 
-// getReferencedObjectValue
-// returns
-//  string    - the value of the property in the specified resource
-//  bool      - true if the value is read, false if the referenced value is not available
-//  error     - non-nil if an error occurred
-func (r *TerraformReconciler) getReferencedObjectValue(ctx context.Context, referenceString string) (string, bool, error) {
+func (r *TerraformReconciler) getReferencedObjectValue(ctx context.Context, referenceString string) GetReferencedObjectValueResult {
 	// TODO - parse the reference
 	// e.g. group:version:kind:namespace:name:propertypath
 
 	if strings.HasPrefix(referenceString, "`") {
 		referenceString = strings.TrimPrefix(referenceString, "`")
 	} else {
-		return "", false, fmt.Errorf("input does not begin with the backtick escape character")
+		return GetReferencedObjectValueResult{
+			Error: fmt.Errorf("input does not begin with the backtick escape character"),
+		}
 	}
 	referenceString = strings.TrimSpace(referenceString)
 
 	referenceParts := strings.Split(referenceString, ":")
 	if len(referenceParts) != 6 {
-		return "", false, fmt.Errorf("input should be in the format group:version:kind:namespace:name:propertypath. Got %q", referenceString)
+		return GetReferencedObjectValueResult{
+			Error: fmt.Errorf("input should be in the format group:version:kind:namespace:name:propertypath. Got %q", referenceString),
+		}
 	}
 
 	group := referenceParts[0]
@@ -386,23 +411,43 @@ func (r *TerraformReconciler) getReferencedObjectValue(ctx context.Context, refe
 			if statusError.ErrStatus.Code == 404 {
 				// not found - might not have been created
 				// return nil error as this should fall into the controlled retry
-				return "", false, nil
+				return GetReferencedObjectValueResult{
+					StatusMessage: fmt.Sprintf("Referenced object not found: '%s:%s:%s:%s:%s'", group, version, kind, namespacedName.Namespace, namespacedName.Name),
+				}
 			}
 		}
-		return "", false, fmt.Errorf("Error getting referenced resource: %s", err)
+		return GetReferencedObjectValueResult{
+			Error: fmt.Errorf("Error getting referenced resource: %s", err),
+		}
 	}
 
 	provisioningState, err := r.getProvisioningState(resource)
 	if err != nil {
-		return "", false, fmt.Errorf("Error getting provisioningState for referenced resource : %s", err)
+		return GetReferencedObjectValueResult{
+			Error: fmt.Errorf("Error getting provisioningState for referenced resource : %s", err),
+		}
 	}
 	if provisioningState != "Created" {
-		return "", false, nil
+		return GetReferencedObjectValueResult{
+			StatusMessage: fmt.Sprintf("Referenced object not provisined yet: '%s:%s:%s:%s:%s'", group, version, kind, namespacedName.Namespace, namespacedName.Name),
+		}
 	}
 
 	propertyPathParts := strings.Split(propertyPath, ".")
 	value, gotValue, err := unstructured.NestedString(resource.Object, propertyPathParts...)
-	return value, gotValue, err
+	if err != nil {
+		return GetReferencedObjectValueResult{
+			Error: fmt.Errorf("Error retrieving property %q: %s", propertyPath, err),
+		}
+	}
+	if gotValue {
+		return GetReferencedObjectValueResult{
+			Value: &value,
+		}
+	}
+	return GetReferencedObjectValueResult{
+		StatusMessage: fmt.Sprintf("Value of property not found %q", propertyPath),
+	}
 }
 
 func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, crd *unstructured.Unstructured) error {
