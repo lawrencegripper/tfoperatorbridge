@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/go-logr/logr"
@@ -60,8 +61,8 @@ func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) {
 	prepConfigResp := provider.PrepareProviderConfig(providers.PrepareProviderConfigRequest{
 		Config: configFull,
 	})
-	if prepConfigResp.Diagnostics.Err() != nil {
-		log.Error(prepConfigResp.Diagnostics.Err(), "Failed to prepare config")
+	if err := prepConfigResp.Diagnostics.Err(); err != nil {
+		log.Error(err, fmt.Sprintf("Failed to prepare config: %s", err))
 		panic("Failed to prepare config")
 	}
 
@@ -77,8 +78,8 @@ func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) {
 	configureProviderResp := provider.Configure(providers.ConfigureRequest{
 		Config: cty.ObjectVal(configValueMap),
 	})
-	if configureProviderResp.Diagnostics.Err() != nil {
-		log.Error(configureProviderResp.Diagnostics.Err(), "Failed to configure provider")
-		panic("Failed to configure provider")
+	if err := configureProviderResp.Diagnostics.Err(); err != nil {
+		log.Error(err, fmt.Sprintf("Failed to configure provider: %s", err))
+		panic(fmt.Sprintf("Failed to configure provider: %s", err))
 	}
 }
