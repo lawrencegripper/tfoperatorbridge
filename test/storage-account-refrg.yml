@@ -1,0 +1,11 @@
+# storage account definition that references the tfbtest1 rg name
+apiVersion: azurerm.tfb.local/valpha1
+kind: storage-account
+metadata:
+  name: test1
+spec:
+  name: slteststor1
+  resource_group_name: "`azurerm.tfb.local:valpha1:resource-group:default:test1:spec.name"
+  location: westeurope
+  account_tier: Standard
+  account_replication_type: LRS

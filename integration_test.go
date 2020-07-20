@@ -26,7 +26,7 @@ func RandomString(n int) string {
 	return string(s)
 }
 
-var _ = Describe("When working with a resource group", func() {
+var _ = Describe("When creating CRDs sequentially after resources are created", func() {
 	randomString := RandomString(12)
 	resourceGroupName := "tftest-" + randomString
 	storageAccountName := randomString
@@ -43,62 +43,189 @@ var _ = Describe("When working with a resource group", func() {
 		Resource: "storage-accounts",
 	}
 
-	It("should allow the resource lifecycle", func() {
-		By("creating the resource-group CRD")
+	Context("When creating the resource group", func() {
+		It("should allow the resource-group CRD to be created", func() {
 
-		Expect(k8sClient).ToNot(BeNil())
+			Expect(k8sClient).ToNot(BeNil())
 
-		objResourceGroup := unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"apiVersion": "azurerm.tfb.local/valpha1",
-				"kind":       "resource-group",
-				"metadata": map[string]interface{}{
-					"name": resourceGroupName,
+			objResourceGroup := unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "azurerm.tfb.local/valpha1",
+					"kind":       "resource-group",
+					"metadata": map[string]interface{}{
+						"name": resourceGroupName,
+					},
+					"spec": map[string]interface{}{
+						"name":     resourceGroupName,
+						"location": "westeurope",
+					},
 				},
-				"spec": map[string]interface{}{
-					"name":     resourceGroupName,
-					"location": "westeurope",
-				},
-			},
-		}
-		_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Create(context.TODO(), &objResourceGroup, metav1.CreateOptions{})
-		Expect(err).To(BeNil())
-
-		By("returning the resource ID")
-		Eventually(func() string {
-			obj, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
-			Expect(err).To(BeNil())
-
-			status, ok := obj.Object["status"].(map[string]interface{})
-			Expect(err).To(BeNil())
-			if !ok {
-				return ""
 			}
+			_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Create(context.TODO(), &objResourceGroup, metav1.CreateOptions{})
+			Expect(err).To(BeNil())
+		}, 30)
+		It("should create the resource group and assign the status.id", func() {
+			Eventually(func() string {
+				obj, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
+				Expect(err).To(BeNil())
 
-			id := status["id"].(string)
-			return id
-		}, time.Second*10, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
+				status, ok := obj.Object["status"].(map[string]interface{})
+				Expect(err).To(BeNil())
+				if !ok {
+					return ""
+				}
 
-		By("creating the storage account")
-
-		objStorageAccount := unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"apiVersion": "azurerm.tfb.local/valpha1",
-				"kind":       "storage-account",
-				"metadata": map[string]interface{}{
-					"name": storageAccountName,
+				id := status["id"].(string)
+				return id
+			}, time.Second*10, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
+		}, 30)
+	})
+	Context("When creating the storage account", func() {
+		It("should allow the storage-account CRD to be created", func() {
+			objStorageAccount := unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "azurerm.tfb.local/valpha1",
+					"kind":       "storage-account",
+					"metadata": map[string]interface{}{
+						"name": storageAccountName,
+					},
+					"spec": map[string]interface{}{
+						"name":                     storageAccountName,
+						"resource_group_name":      resourceGroupName,
+						"location":                 "westeurope",
+						"account_tier":             "Standard",
+						"account_replication_type": "LRS",
+					},
 				},
-				"spec": map[string]interface{}{
-					"name":                     storageAccountName,
-					"resource_group_name":      resourceGroupName,
-					"location":                 "westeurope",
-					"account_tier":             "Standard",
-					"account_replication_type": "LRS",
+			}
+			_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Create(context.TODO(), &objStorageAccount, metav1.CreateOptions{})
+			Expect(err).To(BeNil())
+		}, 30)
+		It("should create the storage account and assign the status.id", func() {
+			By("returning the storage account ID")
+			Eventually(func() string {
+				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+				Expect(err).To(BeNil())
+
+				status, ok := obj.Object["status"].(map[string]interface{})
+				Expect(err).To(BeNil())
+				if !ok {
+					return ""
+				}
+
+				id := status["id"].(string)
+				return id
+			}, time.Minute*3, time.Second*5).Should(Not(BeEmpty())) // TODO check id format
+
+			// TODO - check other `status` properties when we're mapping them
+		}, 300)
+	})
+	Context("When deleting the storage account", func() {
+		It("should allow the CRD delete request", func() {
+			err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Delete(context.TODO(), storageAccountName, metav1.DeleteOptions{})
+			Expect(err).To(BeNil())
+		})
+		It("should delete CRD", func() {
+			Eventually(func() bool {
+				_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return true
+					}
+					Expect(err).To(BeNil())
+				}
+				return false
+			}, time.Minute*5, time.Second*10).Should(BeTrue())
+		}, 300)
+	})
+	Context("When deleting the storage account", func() {
+		It("should allow the CRD delete request", func() {
+			err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Delete(context.TODO(), resourceGroupName, metav1.DeleteOptions{})
+			Expect(err).To(BeNil())
+		})
+		It("should delete CRD", func() {
+
+			Eventually(func() bool {
+				_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return true
+					}
+					Expect(err).To(BeNil())
+				}
+				return false
+			}, time.Second*120, time.Second*10).Should(BeTrue())
+		}, 300)
+	})
+})
+
+var _ = Describe("When creating CRDs out of order with references", func() {
+	// This test creates the storage account CRD first but the referenced resource group doesn't exist
+	// It checks that it retries and succeeds once the resource group is created
+
+	randomString := RandomString(12)
+	resourceGroupName := "tftest-" + randomString
+	storageAccountName := randomString
+
+	gvrResourceGroup := schema.GroupVersionResource{
+		Group:    "azurerm.tfb.local",
+		Version:  "valpha1",
+		Resource: "resource-groups",
+	}
+
+	gvrStorageAccount := schema.GroupVersionResource{
+		Group:    "azurerm.tfb.local",
+		Version:  "valpha1",
+		Resource: "storage-accounts",
+	}
+
+	Context("When creating the CRDs", func() {
+		It("should allow the storage-account CRD to be created", func() {
+			objStorageAccount := unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "azurerm.tfb.local/valpha1",
+					"kind":       "storage-account",
+					"metadata": map[string]interface{}{
+						"name": storageAccountName,
+					},
+					"spec": map[string]interface{}{
+						"name":                     storageAccountName,
+						"resource_group_name":      "`azurerm.tfb.local:valpha1:resource-group:default:" + resourceGroupName + ":spec.name",
+						"location":                 "westeurope",
+						"account_tier":             "Standard",
+						"account_replication_type": "LRS",
+					},
 				},
-			},
-		}
-		_, err = k8sClient.Resource(gvrStorageAccount).Namespace("default").Create(context.TODO(), &objStorageAccount, metav1.CreateOptions{})
-		Expect(err).To(BeNil())
+			}
+			_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Create(context.TODO(), &objStorageAccount, metav1.CreateOptions{})
+			Expect(err).To(BeNil())
+
+			// TODO - when we add events, wait for an event indicating retrying due to referenced resources
+			// for now - wait a short time to allow the controller to attempt and then requeue
+			time.Sleep(time.Second)
+		}, 30)
+		It("should allow the resource-group CRD to be created", func() {
+
+			Expect(k8sClient).ToNot(BeNil())
+
+			objResourceGroup := unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "azurerm.tfb.local/valpha1",
+					"kind":       "resource-group",
+					"metadata": map[string]interface{}{
+						"name": resourceGroupName,
+					},
+					"spec": map[string]interface{}{
+						"name":     resourceGroupName,
+						"location": "westeurope",
+					},
+				},
+			}
+			_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Create(context.TODO(), &objResourceGroup, metav1.CreateOptions{})
+			Expect(err).To(BeNil())
+		}, 30)
+	})
+	It("should retry and create the storage account and assign the status.id", func() {
 
 		By("returning the storage account ID")
 		Eventually(func() string {
@@ -114,37 +241,42 @@ var _ = Describe("When working with a resource group", func() {
 			id := status["id"].(string)
 			return id
 		}, time.Minute*3, time.Second*5).Should(Not(BeEmpty())) // TODO check id format
-
-		By("deleting the storage account CRD")
-		err = k8sClient.Resource(gvrStorageAccount).Namespace("default").Delete(context.TODO(), storageAccountName, metav1.DeleteOptions{})
-		Expect(err).To(BeNil())
-
-		Eventually(func() bool {
-			_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
-			if err != nil {
-				if errors.IsNotFound(err) {
-					return true
+	}, 300)
+	Context("When deleting the storage account", func() {
+		It("should allow the CRD delete request", func() {
+			err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Delete(context.TODO(), storageAccountName, metav1.DeleteOptions{})
+			Expect(err).To(BeNil())
+		})
+		It("should delete CRD", func() {
+			Eventually(func() bool {
+				_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return true
+					}
+					Expect(err).To(BeNil())
 				}
-				Expect(err).To(BeNil())
-			}
-			return false
-		}, time.Minute*5, time.Second*10).Should(BeTrue())
+				return false
+			}, time.Minute*5, time.Second*10).Should(BeTrue())
+		}, 300)
+	})
+	Context("When deleting the storage account", func() {
+		It("should allow the CRD delete request", func() {
+			err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Delete(context.TODO(), resourceGroupName, metav1.DeleteOptions{})
+			Expect(err).To(BeNil())
+		})
+		It("should delete CRD", func() {
 
-		By("deleting the resource group CRD")
-		err = k8sClient.Resource(gvrResourceGroup).Namespace("default").Delete(context.TODO(), resourceGroupName, metav1.DeleteOptions{})
-		Expect(err).To(BeNil())
-
-		Eventually(func() bool {
-			_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
-			if err != nil {
-				if errors.IsNotFound(err) {
-					return true
+			Eventually(func() bool {
+				_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
+				if err != nil {
+					if errors.IsNotFound(err) {
+						return true
+					}
+					Expect(err).To(BeNil())
 				}
-				Expect(err).To(BeNil())
-			}
-			return false
-		}, time.Second*120, time.Second*10).Should(BeTrue())
-
-	}, 20)
-
+				return false
+			}, time.Second*120, time.Second*10).Should(BeTrue())
+		}, 300)
+	})
 })
