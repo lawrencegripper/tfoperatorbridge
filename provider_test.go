@@ -2,38 +2,23 @@ package main
 
 import (
 	"testing"
-
-	"github.com/zclconf/go-cty/cty"
 )
 
-func Test_createEmptyProviderConfWithDefaults(t *testing.T) {
+func Test_ConfigureProvidersWithDefaults_expectNoError(t *testing.T) {
 
-	tests := []struct {
-		name         string
-		providerName string
-		want         *cty.Value
-		wantErr      bool
-	}{
-		{
-			name:         "azurerm",
-			providerName: "azurerm",
-			want:         &cty.EmptyObjectVal,
-			wantErr:      false,
-		},
+	tests := []string{
+		"azurerm", "azuread", "aws", "helm",
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, providerName := range tests {
+		t.Run(providerName, func(t *testing.T) {
 
-			provider := getInstanceOfProvider(tt.providerName)
+			provider := getInstanceOfProvider(providerName)
 
 			_, err := createEmptyProviderConfWithDefaults(provider)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("createEmptyProviderConfWithDefaults() error = %v, wantErr %v", err, tt.wantErr)
+			if err != nil {
+				t.Errorf("failed to configure provider with defaults. error = %v", err)
 				return
 			}
-			// if !reflect.DeepEqual(got, tt.want) {
-			// 	t.Errorf("createEmptyProviderConfWithDefaults() = %v, want %v", got, tt.want)
-			// }
 		})
 	}
 }
