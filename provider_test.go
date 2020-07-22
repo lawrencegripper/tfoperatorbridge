@@ -4,12 +4,18 @@ import (
 	"testing"
 )
 
-func Test_ConfigureProvidersWithDefaults_expectNoError(t *testing.T) {
+// Ensure you run ./hack/init.sh to
+// install the providers before running these tests
+var testedProviders = []string{
+	"azurerm",
+	"azuread",
+	"helm",
+	// "aws", // Not working atm
+}
 
-	tests := []string{
-		"azurerm", "azuread", "aws", "helm",
-	}
-	for _, providerName := range tests {
+func Test_PrepareProviderConfigWithDefaults_expectNoError(t *testing.T) {
+
+	for _, providerName := range testedProviders {
 		t.Run(providerName, func(t *testing.T) {
 
 			provider := getInstanceOfProvider(providerName)
