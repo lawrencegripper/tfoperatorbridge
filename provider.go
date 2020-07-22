@@ -46,6 +46,10 @@ func getInstanceOfProvider(providerName string) *plugin.GRPCProvider {
 }
 
 func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBody string) (*cty.Value, error) {
+	if configBody == "" {
+		configBody = os.Getenv("PROVIDER_CONFIG_HCL")
+	}
+
 	// We need a set of cty.Value which maps to the schema of the provider's configuration block.
 	// NOTE:
 	// 1. If the schema has optional elements they're NOT optional in the cty.Value. The cty.Value structure must include all fields
@@ -81,36 +85,29 @@ func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBo
 		Config: configFull,
 	})
 	if err := prepConfigResp.Diagnostics.Err(); err != nil {
-		return nil, fmt.Errorf("Failed to set defaults on provider config: %w", err)
+		return nil, fmt.Errorf(`Failed to set configure provider from config: %w.`+
+			`Hint: See startup docs on using PROVIDER_CONFIG_HC or the providers envs to set required fields`, err)
 	}
 
 	return &configFull, nil
 }
 
-func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) {
+func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) error {
 	configWithDefaults, err := createEmptyProviderConfWithDefaults(provider, "")
 	if err != nil {
-		log.Error(err, fmt.Sprintf("Failed to prepare config: %s", err))
-		panic("Failed to prepare config")
+		return err
 	}
-
-	configValueMap := configWithDefaults.AsValueMap()
-	// Todo: populate these values from configmap
-	// Lets set the values we need to set while we have the value map
-	configValueMap["client_id"] = cty.StringVal(os.Getenv("ARM_CLIENT_ID"))
-	configValueMap["client_secret"] = cty.StringVal(os.Getenv("ARM_CLIENT_SECRET"))
-	configValueMap["tenant_id"] = cty.StringVal(os.Getenv("ARM_TENANT_ID"))
-	configValueMap["subscription_id"] = cty.StringVal(os.Getenv("ARM_SUBSCRIPTION_ID"))
-
 	// Now we have a prepared config we can configure the provider.
 	// Warning (again): Diagnostics houses errors, the typical go err pattern isn't followed - must check `resp.Diagnostics.Err()`
 	configureProviderResp := provider.Configure(providers.ConfigureRequest{
-		Config: cty.ObjectVal(configValueMap),
+		Config: *configWithDefaults,
 	})
 	if err := configureProviderResp.Diagnostics.Err(); err != nil {
 		log.Error(err, fmt.Sprintf("Failed to configure provider: %s", err))
-		panic(fmt.Sprintf("Failed to configure provider: %s", err))
+		return err
 	}
+
+	return nil
 }
 
 // This compliments the `emtypBlock` as it will check that blocks are correctly populated

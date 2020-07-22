@@ -14,7 +14,10 @@ func main() {
 
 	// Example talking to the Azure resources using the provider
 	log := ctrl.Log.WithName("main")
-	configureProvider(log, provider)
+	err := configureProvider(log, provider)
+	if err != nil {
+		panic(err)
+	}
 
 	// Example creating CRDs in K8s with correct structure based on TF Schemas
 	resources := createCRDsForResources(provider)
