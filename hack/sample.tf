@@ -10,13 +10,11 @@ provider "azuread" {
 
 provider "aws" {
   version = "~> 2.70.0"
-  features {}
 }
 
 
 provider "helm" {
   version = "~> 1.2.3"
-  features {}
 }
 
 

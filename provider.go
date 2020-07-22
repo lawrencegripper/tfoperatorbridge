@@ -8,7 +8,10 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/terraform/configs/configschema"
+	"github.com/hashicorp/terraform/lang"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/plugin/discovery"
 	"github.com/hashicorp/terraform/providers"
@@ -22,6 +25,7 @@ func getInstanceOfProvider(providerName string) *plugin.GRPCProvider {
 		panic("no plugins found")
 	}
 	clientConfig := plugin.ClientConfig(pluginMeta.Newest())
+
 	// Don't log provider details unless provider log is enabled by env
 	if _, exists := os.LookupEnv("ENABLE_PROVIDER_LOG"); !exists {
 		clientConfig.Logger = hclog.NewNullLogger()
@@ -41,7 +45,7 @@ func getInstanceOfProvider(providerName string) *plugin.GRPCProvider {
 	return raw.(*plugin.GRPCProvider)
 }
 
-func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider) (*cty.Value, error) {
+func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBody string) (*cty.Value, error) {
 	// We need a set of cty.Value which maps to the schema of the provider's configuration block.
 	// NOTE:
 	// 1. If the schema has optional elements they're NOT optional in the cty.Value. The cty.Value structure must include all fields
@@ -53,21 +57,22 @@ func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider) (*cty.Va
 	// 3. When the `cty.ObjectVal` doesn't follow the required schema the error messages provided back don't make this immediately clear.
 	//    You may for example receive a message of `attribute 'use_msi' bool is required` when the error was introducing the wrong structure for the `features` list
 	providerConfigBlock := provider.GetSchema().Provider.Block
-	configProvider := providerConfigBlock.EmptyValue()
 
-	// Here is an example of a list min 1.
-	// The `features` block in the Azure RM provider
-	//
-	// provider "azurerm" {
-	// 	version = "=2.0.0"
-	// 	features {}
-	// }
-	//
-	// Represented as YAML this would be:
-	//
-	// features:
-	// - ~
-	configFull := populateSingleInstanceBlocks(configProvider, providerConfigBlock.BlockTypes)
+	// Parse the content of the provider block given to us into a body.
+	file, diagParse := hclsyntax.ParseConfig([]byte(configBody), "test.tf", hcl.Pos{})
+	if diagParse.HasErrors() {
+		return nil, fmt.Errorf("Failed parsing provider config block: %s", diagParse.Error())
+	}
+
+	scope := lang.Scope{}
+	expandedConf, diags := scope.ExpandBlock(file.Body, providerConfigBlock)
+	if diags.Err() != nil {
+		return nil, fmt.Errorf("Failed expanding provider config block: %w", diags.Err())
+	}
+	configFull, diags := scope.EvalBlock(expandedConf, providerConfigBlock)
+	if diags.Err() != nil {
+		return nil, fmt.Errorf("Failed evaluating provider config block: %w", diags.Err())
+	}
 
 	// Call the `PrepareProviderConfig` with the config object. This returns a version of that config with the
 	// required default setup as `PreparedConfig` under the response object.
@@ -83,7 +88,7 @@ func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider) (*cty.Va
 }
 
 func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) {
-	configWithDefaults, err := createEmptyProviderConfWithDefaults(provider)
+	configWithDefaults, err := createEmptyProviderConfWithDefaults(provider, "")
 	if err != nil {
 		log.Error(err, fmt.Sprintf("Failed to prepare config: %s", err))
 		panic("Failed to prepare config")
@@ -111,7 +116,7 @@ func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) {
 // This compliments the `emtypBlock` as it will check that blocks are correctly populated
 // when a single block is mandated (min 1 max 1)
 func populateSingleInstanceBlocks(value cty.Value, blocks map[string]*configschema.NestedBlock) cty.Value {
-	log.Println("Enter")
+
 	valueMap := value.AsValueMap()
 	for name, nestedBlock := range blocks {
 		log.Println("NestedBlock: " + name)
