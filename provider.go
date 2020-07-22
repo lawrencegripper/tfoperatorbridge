@@ -67,22 +67,6 @@ func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider) (*cty.Va
 	//
 	// features:
 	// - ~
-
-	// configValueMap := configProvider.AsValueMap()
-	// // Workaround to create a `cty.ListVal` for `features` block with one blank item in it.
-	// // Get block definition
-	// featuresType := providerConfigBlock.BlockTypes["features"]
-	// // Create a map to represent the block
-	// featuresBlockMap := map[string]cty.Value{}
-	// log.Info("%v", featuresType)
-	// // Get each of the nested blocks required in the block and create
-	// // empty items for them. Insert them into the featuresBlockMap
-	// for name, nestedBlock := range featuresType.BlockTypes {
-	// 	featuresBlockMap[name] = nestedBlock.EmptyValue()
-	// }
-	// // On the provider config block set the `features` attribute to be a list with an instance of the features block in it.
-	// configValueMap["features"] = cty.ListVal([]cty.Value{cty.ObjectVal(featuresBlockMap)})
-
 	configFull := populateSingleInstanceBlocks(configProvider, providerConfigBlock.BlockTypes)
 
 	// Call the `PrepareProviderConfig` with the config object. This returns a version of that config with the
@@ -127,19 +111,30 @@ func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) {
 // This compliments the `emtypBlock` as it will check that blocks are correctly populated
 // when a single block is mandated (min 1 max 1)
 func populateSingleInstanceBlocks(value cty.Value, blocks map[string]*configschema.NestedBlock) cty.Value {
+	log.Println("Enter")
 	valueMap := value.AsValueMap()
 	for name, nestedBlock := range blocks {
+		log.Println("NestedBlock: " + name)
 		if nestedBlock.MinItems == 1 && nestedBlock.MaxItems == 1 {
 			// Create an array of length 1 with the empty block values as required by schema
+
+			// Recurse into the block to see if any other min/max 1 block exist and populate those
 			if len(nestedBlock.BlockTypes) > 0 {
-				log.Println("Nested block type:" + name)
-				// Recurse into the block to see if any other min/max 1 block exist and populate those
+				log.Println("Nested block type has nested blocks:" + name)
 				result := populateSingleInstanceBlocks(nestedBlock.EmptyValue(), nestedBlock.BlockTypes)
-				populatedBlockValue := cty.ListVal([]cty.Value{cty.ObjectVal(result.AsValueMap())})
+				populatedBlockValue := cty.ListVal([]cty.Value{result})
 				valueMap[name] = populatedBlockValue
 			} else {
-				valueMap[name] = cty.ListVal([]cty.Value{cty.ObjectVal(nestedBlock.EmptyValue().AsValueMap())})
+				// For blocks without nested block bring back a empty list val
+				valueMap[name] = cty.ListVal([]cty.Value{nestedBlock.EmptyValue()})
 			}
+		} else {
+			// If they have no nested blocks set an empty value, handle the case that
+			// the provided valueMap may be nil
+			if valueMap == nil {
+				valueMap = map[string]cty.Value{}
+			}
+			valueMap[name] = nestedBlock.EmptyValue()
 		}
 	}
 	return cty.ObjectVal(valueMap)
