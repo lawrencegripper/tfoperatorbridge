@@ -2,6 +2,8 @@ build:
 	go build .
 
 run: kind-create terraform-hack-init
+	@echo "==> Attempting to sourcing .env file"
+	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
 	go run .
 
 kind-create:
