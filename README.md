@@ -35,6 +35,45 @@ Users should be able to deploy the bridge into their cluster with a provider sel
 `ENABLE_PROVIDER_LOG` To enable full provider logs
 `SKIP_CRD_CREATION` To skip CRD creation at startup
 
+## Provider Config
+
+There are two ways to configure the provider used by the operator. 
+
+1. Normal provider environment variables
+2. An environment variable which contains the HCL for provider config
+
+They can be used individually or together.
+
+For an example of how these can be used together [see the `azurerm` .env file](./.env-template-azurerm).
+
+### Environment variables
+
+The providers will pickup and use the same environment variables as when used in normal terraform. 
+
+For example, the following will set `client_id` in the `azurerm` provider. 
+
+`ARM_CLIENT_ID=<YOUR-CLIENT-HERE>`
+
+### HCL Configuration
+
+There is a special environment variable which can be used for more complex provider configuration. This is a fallback option.
+
+`PROVIDER_CONFIG_HCL` Lets you define the config for the provider as you would in a terraform block. For example:
+
+```hcl
+provider "azurerm" {
+  features {}
+}
+```
+Can be set as follows:
+```
+PROVIDER_CONFIG_HCL="features {}"
+```
+
+
+
+
+
 ## Notes
 
 - OpenAPI Generation in K8s https://github.com/kubernetes/kube-openapi/blob/master/pkg/generators/openapi.go
