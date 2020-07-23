@@ -1,3 +1,5 @@
+DEV_CONTAINER_TAG:=devcontainer
+
 build: 
 	go build .
 
@@ -13,7 +15,7 @@ kind-create:
 terraform-hack-init:
 	./hack/init.sh
 
-integration-tests:
+integration-tests: run
 	# TODO automatically run the operator
 	ginkgo  -v
 
@@ -32,3 +34,25 @@ clear-stor:
 	-kubectl patch storage-account/teststorage -p '{"metadata":{"finalizers":[]}}' --type=merge
 	-kubectl delete -f ./examples/storageAccount.yaml
 	-az storage account delete --name test14tfbop --yes
+
+devcontainer:
+	@echo "Building devcontainer using tag: $(DEV_CONTAINER_TAG)"
+	docker build -f .devcontainer/Dockerfile -t $(DEV_CONTAINER_TAG) ./.devcontainer 
+
+devcontainer-integration:
+ifdef DEVCONTAINER
+	$(error This target can only be run outside of the devcontainer as it mounts files and this fails within a devcontainer. Don't worry all it needs is docker)
+endif
+	@echo "Using tag: $(DEV_CONTAINER_TAG)"
+	docker run \
+		-v ${PWD}:/src \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-e ARM_CLIENT_ID="${ARM_CLIENT_ID}" \
+		-e ARM_CLIENT_SECRET="${ARM_CLIENT_SECRET}" \
+		-e ARM_SUBSCRIPTION_ID="${ARM_SUBSCRIPTION_ID}" \
+		-e ARM_TENANT_ID="$(ARM_TENANT_ID)" \
+		-e PROVIDER_CONFIG_HCL="features {}" \
+		--entrypoint /bin/bash \
+		--workdir /src \
+		$(DEV_CONTAINER_TAG) \
+		-c 'make integration-tests'
