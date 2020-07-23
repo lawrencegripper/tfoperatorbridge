@@ -86,7 +86,7 @@ func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBo
 	})
 	if err := prepConfigResp.Diagnostics.Err(); err != nil {
 		return nil, fmt.Errorf(`Failed to set configure provider from config: %w.`+
-			`Hint: See startup docs on using PROVIDER_CONFIG_HC or the providers envs to set required fields`, err)
+			`Hint: See startup docs on using PROVIDER_CONFIG_HC or the providers env vars to set required fields`, err)
 	}
 
 	return &configFull, nil
