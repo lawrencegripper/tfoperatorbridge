@@ -1,0 +1,23 @@
+# This is a NON-WORKING same of how we expect to deploy the operator into K8s
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arm-tfprovider-config
+  namespace: default
+data:
+  ARM_CLIENT_SECRET: stuff
+  ARM_CLIENT_ID: things
+  PROVIDER_CONFIG_HCL: "features {}"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tfoperatorbridge
+spec:
+  containers:
+    - name: operator
+      image: imagetbc
+      command: [ "/bin/sh", "-c", "env" ]
+      envFrom:
+      - configMapRef:
+          name: arm-tfprovider-config

@@ -19,10 +19,11 @@ import (
 )
 
 func getInstanceOfProvider(providerName string) *plugin.GRPCProvider {
+
 	pluginMeta := discovery.FindPlugins(plugin.ProviderPluginName, []string{"./hack/.terraform/plugins/linux_amd64/"}).WithName(providerName)
 
 	if pluginMeta.Count() < 1 {
-		panic("no plugins found")
+		log.Println("Provide not found locally attempting to download")
 	}
 	clientConfig := plugin.ClientConfig(pluginMeta.Newest())
 
@@ -50,20 +51,11 @@ func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBo
 		configBody = os.Getenv("PROVIDER_CONFIG_HCL")
 	}
 
-	// We need a set of cty.Value which maps to the schema of the provider's configuration block.
-	// NOTE:
-	// 1. If the schema has optional elements they're NOT optional in the cty.Value. The cty.Value structure must include all fields
-	//    specified in the schema. The values of the attributes can be empy if they're optional. To get this we use `EmptyValue` on the schema
-	//    this iterates the schema and creates a `cty.ObjectVal` which maps to the schema with each attribute set to empty.
-	// 2. If the schema includes a List item with a min 1 length the `EmptyValue` will no create a valid ObjectVal for the schema.
-	//    It will create an empty list item `[]stringval{}` as this doesn't have 1 item it doesn't match the schema. What is needed is a list with 1 item.
-	//    When these items are missing the error messages are of the format `features attribute is required`
-	// 3. When the `cty.ObjectVal` doesn't follow the required schema the error messages provided back don't make this immediately clear.
-	//    You may for example receive a message of `attribute 'use_msi' bool is required` when the error was introducing the wrong structure for the `features` list
 	providerConfigBlock := provider.GetSchema().Provider.Block
 
 	// Parse the content of the provider block given to us into a body.
-	file, diagParse := hclsyntax.ParseConfig([]byte(configBody), "test.tf", hcl.Pos{})
+	// Note: The file name is required but isn't important in this context so we provide a nonexistent dummy filename.
+	file, diagParse := hclsyntax.ParseConfig([]byte(configBody), "dummy.tf", hcl.Pos{})
 	if diagParse.HasErrors() {
 		return nil, fmt.Errorf("Failed parsing provider config block: %s", diagParse.Error())
 	}
@@ -108,36 +100,4 @@ func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) error {
 	}
 
 	return nil
-}
-
-// This compliments the `emtypBlock` as it will check that blocks are correctly populated
-// when a single block is mandated (min 1 max 1)
-func populateSingleInstanceBlocks(value cty.Value, blocks map[string]*configschema.NestedBlock) cty.Value {
-
-	valueMap := value.AsValueMap()
-	for name, nestedBlock := range blocks {
-		log.Println("NestedBlock: " + name)
-		if nestedBlock.MinItems == 1 && nestedBlock.MaxItems == 1 {
-			// Create an array of length 1 with the empty block values as required by schema
-
-			// Recurse into the block to see if any other min/max 1 block exist and populate those
-			if len(nestedBlock.BlockTypes) > 0 {
-				log.Println("Nested block type has nested blocks:" + name)
-				result := populateSingleInstanceBlocks(nestedBlock.EmptyValue(), nestedBlock.BlockTypes)
-				populatedBlockValue := cty.ListVal([]cty.Value{result})
-				valueMap[name] = populatedBlockValue
-			} else {
-				// For blocks without nested block bring back a empty list val
-				valueMap[name] = cty.ListVal([]cty.Value{nestedBlock.EmptyValue()})
-			}
-		} else {
-			// If they have no nested blocks set an empty value, handle the case that
-			// the provided valueMap may be nil
-			if valueMap == nil {
-				valueMap = map[string]cty.Value{}
-			}
-			valueMap[name] = nestedBlock.EmptyValue()
-		}
-	}
-	return cty.ObjectVal(valueMap)
 }
