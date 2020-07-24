@@ -172,12 +172,12 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 	}
 
 	for _, resource := range resources {
-		data, err := json.Marshal(resource)
+		data, _ := json.Marshal(resource)
 
 		// K8s uses it's own type system for OpenAPI.
 		// To easily convert lets serialize ours and deserialize it as theirs
 		var jsonSchemaProps apiextensionsv1beta1.JSONSchemaProps
-		err = json.Unmarshal(data, &jsonSchemaProps)
+		_ = json.Unmarshal(data, &jsonSchemaProps)
 
 		// Create the names for the CRD
 		kind := strings.Replace(strings.Replace(resource.Description, "_", "-", -1), "azurerm-", "", -1)
