@@ -19,6 +19,14 @@ integration-tests: run
 	# TODO automatically run the operator
 	ginkgo  -v
 
+lint:
+	golangci-lint run ./...
+
+fmt:
+	find . -name '*.go' | grep -v vendor | xargs gofmt -s -w
+
+ci: lint fmt integration-tests
+
 create-rg:
 	kubectl apply -f ./examples/resourceGroup.yaml
 
@@ -39,7 +47,7 @@ devcontainer:
 	@echo "Building devcontainer using tag: $(DEV_CONTAINER_TAG)"
 	docker build -f .devcontainer/Dockerfile -t $(DEV_CONTAINER_TAG) ./.devcontainer 
 
-devcontainer-integration:
+devcontainer-ci:
 ifdef DEVCONTAINER
 	$(error This target can only be run outside of the devcontainer as it mounts files and this fails within a devcontainer. Don't worry all it needs is docker)
 endif
@@ -55,4 +63,4 @@ endif
 		--entrypoint /bin/bash \
 		--workdir /src \
 		$(DEV_CONTAINER_TAG) \
-		-c 'make integration-tests'
+		-c 'make ci'
