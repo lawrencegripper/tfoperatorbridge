@@ -5,7 +5,7 @@ build:
 
 run: kind-create terraform-hack-init
 	@echo "==> Attempting to sourcing .env file"
-	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
+	- if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
 	go run .
 
 kind-create:
@@ -16,7 +16,10 @@ terraform-hack-init:
 	./hack/init.sh
 
 integration-tests: run
-	# TODO automatically run the operator
+	# Re-run 'go run .' due to an error in the first run
+	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
+	SKIP_CRD_CREATION=1 go run . &
+	./scripts/wait-for-bridge.sh
 	ginkgo  -v
 
 lint:
