@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
@@ -18,6 +19,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 func createCRDsForResources(provider *plugin.GRPCProvider) []GroupVersionFull {
@@ -163,12 +165,23 @@ type GroupVersionFull struct {
 // k8s stuff
 func installCRDs(resources []spec.Schema, providerName, providerVersion string) []GroupVersionFull {
 	clientConfig := getK8sClientConfig()
+	// Tracks all CRDs Installed or preexisting generated from the TF Schema
 	gvArray := make([]GroupVersionFull, 0, len(resources))
+	// Tracks only CRDS newly installed in this run
+	crdsToCheckInstalled := []GroupVersionFull{}
 
 	// create the clientset
 	apiextensionsClientSet, err := apiextensionsclientset.NewForConfig(clientConfig)
 	if err != nil {
 		panic(err)
+	}
+
+	// Only install when required
+	// Todo: Limit to only CRDs for the operator
+	installedCrds, err := apiextensionsClientSet.ApiextensionsV1beta1().CustomResourceDefinitions().List(context.TODO(), metav1.ListOptions{})
+	installedCrdsMap := map[string]bool{}
+	for _, crd := range installedCrds.Items {
+		installedCrdsMap[crd.Name] = true
 	}
 
 	for _, resource := range resources {
@@ -208,21 +221,7 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 			},
 		}
 
-		// Skip CRD Creation if env set.
-		_, skipcreation := os.LookupEnv("SKIP_CRD_CREATION")
-		if skipcreation {
-			fmt.Println("SKIP_CRD_CREATION set - skipping CRD creation")
-		} else {
-			_, err = createCustomResourceDefinition("default", apiextensionsClientSet, crd)
-		}
-
-		if err != nil {
-			log.Println(err.Error())
-			continue
-		}
-
-		// If CRD was successfull created then add it to GV array
-		gvArray = append(gvArray, GroupVersionFull{
+		gvFull := GroupVersionFull{
 			GroupVersionResource: schema.GroupVersionResource{
 				Group:    groupName,
 				Resource: resource,
@@ -232,8 +231,30 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 				Group:   groupName,
 				Version: version,
 				Kind:    kind,
-			}})
+			}}
+
+		// Skip CRD Creation if env set.
+		_, skipcreation := os.LookupEnv("SKIP_CRD_CREATION")
+		kindAlreadyExists, _ := installedCrdsMap[crdName]
+		if skipcreation {
+			fmt.Println("SKIP_CRD_CREATION set - skipping CRD creation")
+		} else if kindAlreadyExists { // Todo: In future this should also check versions too
+			fmt.Println("Skipping CRD creation as kind already exists")
+		} else {
+			_, err = createCustomResourceDefinition("default", apiextensionsClientSet, crd)
+			if err != nil {
+				log.Println(err.Error())
+				continue
+			}
+			crdsToCheckInstalled = append(crdsToCheckInstalled, gvFull)
+		}
+
+		// If CRD was successfull created or already exists then add it to GV array
+		gvArray = append(gvArray, gvFull)
 	}
+
+	// Check any newly installed CRDs are in correct state
+	waitForCRDsToBeInstalled(apiextensionsClientSet, crdsToCheckInstalled)
 
 	return gvArray
 }
@@ -253,4 +274,40 @@ func createCustomResourceDefinition(namespace string, clientSet apiextensionscli
 	}
 
 	return crd, nil
+}
+
+func waitForCRDsToBeInstalled(clientSet apiextensionsclientset.Interface, crds []GroupVersionFull) {
+	for _, resource := range crds {
+		crdName := resource.GroupVersionResource.Resource + "." + resource.GroupVersionResource.Group
+		// Wait for CRD creation.
+		err := wait.PollImmediate(5*time.Second, 60*time.Second, func() (bool, error) {
+			crd, err := clientSet.ApiextensionsV1beta1().CustomResourceDefinitions().Get(context.TODO(), crdName, metav1.GetOptions{})
+			fmt.Printf("Waiting on CRD creation: %q \n", crdName)
+			if err != nil {
+				fmt.Printf("Fail to wait for CRD creation: %+v\n", err)
+
+				return false, err
+			}
+			for _, cond := range crd.Status.Conditions {
+				switch cond.Type {
+				case apiextensionsv1beta1.Established:
+					if cond.Status == apiextensionsv1beta1.ConditionTrue {
+						fmt.Printf("CRD creation confirmed: %q \n", crdName)
+						return true, err
+					}
+				case apiextensionsv1beta1.NamesAccepted:
+					if cond.Status == apiextensionsv1beta1.ConditionFalse {
+						fmt.Printf("Name conflict while wait for CRD creation: %s, %+v\n", cond.Reason, err)
+					}
+				}
+			}
+
+			return false, err
+		})
+
+		// If there is an error, delete the object to keep it clean.
+		if err != nil {
+			panic(err)
+		}
+	}
 }
