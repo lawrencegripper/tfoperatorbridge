@@ -18,7 +18,6 @@ import (
 )
 
 func getInstanceOfProvider(providerName string) *plugin.GRPCProvider {
-
 	pluginMeta := discovery.FindPlugins(plugin.ProviderPluginName, []string{"./hack/.terraform/plugins/linux_amd64/"}).WithName(providerName)
 
 	if pluginMeta.Count() < 1 {

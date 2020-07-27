@@ -32,7 +32,6 @@ var testedProviders = []providerTestDef{
 }
 
 func Test_PrepareProviderConfigWithDefaults_expectNoError(t *testing.T) {
-
 	for _, tt := range testedProviders {
 		t.Run(tt.name, func(t *testing.T) {
 			// Clear the HCL config env if already set by previous test

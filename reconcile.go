@@ -49,7 +49,6 @@ type GetTerraformValueResult struct {
 }
 
 func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, crd *unstructured.Unstructured) (*ctrl.Result, error) {
-
 	log.Info("Reconcile starting")
 	// Get the kinds terraform schema
 	kind := crd.GetKind()
@@ -499,7 +498,6 @@ func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty
 }
 
 func (r *TerraformReconciler) saveResourceStatus(ctx context.Context, originalResource *unstructured.Unstructured, resource *unstructured.Unstructured) error {
-
 	err := r.client.Status().Patch(ctx, resource, client.MergeFrom(originalResource))
 	if err != nil {
 		//log.Error(err, "Failed saving resource")

@@ -15,7 +15,6 @@ import (
 var k8sClient dynamic.Interface
 
 func TestTfOperatorBridge(t *testing.T) {
-
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Workspace Suite")
 }

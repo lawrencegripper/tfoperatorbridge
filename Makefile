@@ -24,7 +24,7 @@ integration-tests: run
 	ginkgo  -v
 
 lint:
-	golangci-lint run ./...
+	golangci-lint run ./... -v
 
 fmt:
 	find . -name '*.go' | grep -v vendor | xargs gofmt -s -w

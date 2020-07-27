@@ -34,7 +34,6 @@ func createCRDsForResources(provider *plugin.GRPCProvider) []GroupVersionFull {
 	// 1. Split terraform computed values into `status` of the CRD as these are unsettable by user
 	// 2. Put required and optional params into the `spec` of the CRD. Setting required status accordinly.
 	for resourceName, resource := range tfSchema.ResourceTypes {
-
 		// Skip any resources which aren't valid DNS names as they're too long
 		if len(resourceName) > 63 {
 			fmt.Printf("Skipping invalid resource - name too long %q", resourceName)
@@ -156,7 +155,7 @@ func getSchemaForType(name string, item *cty.Type) *spec.Schema {
 	return property
 }
 
-// Todo: Check if this type already existing of if simplier way to handle tracking both Kind and Resource
+// Todo: Check if this type already existing of if simpler way to handle tracking both Kind and Resource
 type GroupVersionFull struct {
 	GroupVersionKind     schema.GroupVersionKind
 	GroupVersionResource schema.GroupVersionResource
@@ -249,7 +248,7 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 			crdsToCheckInstalled = append(crdsToCheckInstalled, gvFull)
 		}
 
-		// If CRD was successfull created or already exists then add it to GV array
+		// If CRD was successful created or already exists then add it to GV array
 		gvArray = append(gvArray, gvFull)
 	}
 
