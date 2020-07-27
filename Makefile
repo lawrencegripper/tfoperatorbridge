@@ -66,7 +66,7 @@ endif
 		-e PROVIDER_CONFIG_HCL="features {}" \
 		--privileged \
 		--device /dev/fuse \
-		--network=host
+		--network=host \
 		--entrypoint /bin/bash \
 		--workdir /src \
 		$(DEV_CONTAINER_TAG) \
