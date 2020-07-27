@@ -64,6 +64,9 @@ endif
 		-e ARM_SUBSCRIPTION_ID="${ARM_SUBSCRIPTION_ID}" \
 		-e ARM_TENANT_ID="$(ARM_TENANT_ID)" \
 		-e PROVIDER_CONFIG_HCL="features {}" \
+		--privileged \
+		--device /dev/fuse \
+		--network=host
 		--entrypoint /bin/bash \
 		--workdir /src \
 		$(DEV_CONTAINER_TAG) \
