@@ -178,7 +178,7 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 
 	// Only install when required
 	// Todo: Limit to only CRDs for the operator
-	installedCrds, err := apiextensionsClientSet.ApiextensionsV1beta1().CustomResourceDefinitions().List(context.TODO(), metav1.ListOptions{})
+	installedCrds, _ := apiextensionsClientSet.ApiextensionsV1beta1().CustomResourceDefinitions().List(context.TODO(), metav1.ListOptions{})
 	installedCrdsMap := map[string]bool{}
 	for _, crd := range installedCrds.Items {
 		installedCrdsMap[crd.Name] = true
@@ -235,7 +235,7 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 
 		// Skip CRD Creation if env set.
 		_, skipcreation := os.LookupEnv("SKIP_CRD_CREATION")
-		kindAlreadyExists, _ := installedCrdsMap[crdName]
+		kindAlreadyExists := installedCrdsMap[crdName]
 		if skipcreation {
 			fmt.Println("SKIP_CRD_CREATION set - skipping CRD creation")
 		} else if kindAlreadyExists { // Todo: In future this should also check versions too
