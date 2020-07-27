@@ -32,8 +32,8 @@ Users should be able to deploy the bridge into their cluster with a provider sel
 
 ## Config 
 
-`ENABLE_PROVIDER_LOG` To enable full provider logs
-`SKIP_CRD_CREATION` To skip CRD creation at startup
+- `ENABLE_PROVIDER_LOG` - Enable full provider logs
+- `SKIP_CRD_CREATION`   - Skip CRD creation at startup
 
 ## Provider Config
 

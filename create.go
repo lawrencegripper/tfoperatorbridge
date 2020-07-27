@@ -34,7 +34,6 @@ func createCRDsForResources(provider *plugin.GRPCProvider) []GroupVersionFull {
 	// 1. Split terraform computed values into `status` of the CRD as these are unsettable by user
 	// 2. Put required and optional params into the `spec` of the CRD. Setting required status accordinly.
 	for resourceName, resource := range tfSchema.ResourceTypes {
-
 		// Skip any resources which aren't valid DNS names as they're too long
 		if len(resourceName) > 63 {
 			fmt.Printf("Skipping invalid resource - name too long %q", resourceName)
@@ -156,7 +155,7 @@ func getSchemaForType(name string, item *cty.Type) *spec.Schema {
 	return property
 }
 
-// Todo: Check if this type already existing of if simplier way to handle tracking both Kind and Resource
+// Todo: Check if this type already existing of if simpler way to handle tracking both Kind and Resource
 type GroupVersionFull struct {
 	GroupVersionKind     schema.GroupVersionKind
 	GroupVersionResource schema.GroupVersionResource
@@ -178,19 +177,19 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 
 	// Only install when required
 	// Todo: Limit to only CRDs for the operator
-	installedCrds, err := apiextensionsClientSet.ApiextensionsV1beta1().CustomResourceDefinitions().List(context.TODO(), metav1.ListOptions{})
+	installedCrds, _ := apiextensionsClientSet.ApiextensionsV1beta1().CustomResourceDefinitions().List(context.TODO(), metav1.ListOptions{})
 	installedCrdsMap := map[string]bool{}
 	for _, crd := range installedCrds.Items {
 		installedCrdsMap[crd.Name] = true
 	}
 
 	for _, resource := range resources {
-		data, err := json.Marshal(resource)
+		data, _ := json.Marshal(resource)
 
 		// K8s uses it's own type system for OpenAPI.
 		// To easily convert lets serialize ours and deserialize it as theirs
 		var jsonSchemaProps apiextensionsv1beta1.JSONSchemaProps
-		err = json.Unmarshal(data, &jsonSchemaProps)
+		_ = json.Unmarshal(data, &jsonSchemaProps)
 
 		// Create the names for the CRD
 		kind := strings.Replace(strings.Replace(resource.Description, "_", "-", -1), "azurerm-", "", -1)
@@ -235,7 +234,7 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 
 		// Skip CRD Creation if env set.
 		_, skipcreation := os.LookupEnv("SKIP_CRD_CREATION")
-		kindAlreadyExists, _ := installedCrdsMap[crdName]
+		kindAlreadyExists := installedCrdsMap[crdName]
 		if skipcreation {
 			fmt.Println("SKIP_CRD_CREATION set - skipping CRD creation")
 		} else if kindAlreadyExists { // Todo: In future this should also check versions too
@@ -249,7 +248,7 @@ func installCRDs(resources []spec.Schema, providerName, providerVersion string) 
 			crdsToCheckInstalled = append(crdsToCheckInstalled, gvFull)
 		}
 
-		// If CRD was successfull created or already exists then add it to GV array
+		// If CRD was successful created or already exists then add it to GV array
 		gvArray = append(gvArray, gvFull)
 	}
 
