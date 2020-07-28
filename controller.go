@@ -93,15 +93,6 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 		os.Exit(1)
 	}
 
-	var encrypter TerraformStateEncrypter
-	if encryptionKey, exists := os.LookupEnv("ENCRYPTION_KEY"); exists {
-		encrypter, err = blowfish.NewCipher([]byte(encryptionKey))
-		if err != nil {
-			setupLog.Error(err, "unable to setup encryption")
-			os.Exit(1)
-		}
-	}
-
 	for _, gv := range resources {
 		groupVersionKind := gv.GroupVersionKind
 		setupLog.Info("Enabling controller for resource", "kind", gv.GroupVersionKind.Kind)
@@ -112,7 +103,7 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 			For(runtimeObjFromGVK(gv.GroupVersionKind), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 			Complete(&controller{
 				Client:       client,
-				tfReconciler: NewTerraformReconciler(provider, client, encrypter),
+				tfReconciler: NewTerraformReconciler(provider, client, getEncrypter()),
 				scheme:       mgr.GetScheme(),
 				gvk:          &groupVersionKind,
 			})
@@ -136,4 +127,16 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func getEncrypter() TerraformStateEncrypter {
+	if encryptionKey, exists := os.LookupEnv("ENCRYPTION_KEY"); exists {
+		encrypter, err := blowfish.NewCipher([]byte(encryptionKey))
+		if err != nil {
+			setupLog.Error(err, "unable to setup encryption")
+			os.Exit(1)
+		}
+		return encrypter
+	}
+	return nil
 }
