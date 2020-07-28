@@ -1,7 +1,10 @@
 DEV_CONTAINER_TAG:=devcontainer
 
-build: 
+build: checks
 	go build .
+
+checks:
+	golangci-lint run
 
 run: kind-create terraform-hack-init
 	@echo "==> Attempting to sourcing .env file"
