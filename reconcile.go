@@ -227,14 +227,14 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 		return fmt.Errorf("Error marshalling state: %s", err)
 	}
 
-	stateStr := string(serializedState)
+	stateStr := serializedState
 	if r.encrypter != nil {
 		var encryptedState []byte
 		r.encrypter.Encrypt(encryptedState, serializedState)
-		stateStr = string(encryptedState)
+		stateStr = encryptedState
 	}
 
-	err = unstructured.SetNestedField(resource.Object, stateStr, "status", "_tfoperator", "tfState")
+	err = unstructured.SetNestedField(resource.Object, string(stateStr), "status", "_tfoperator", "tfState")
 	if err != nil {
 		return fmt.Errorf("Error setting tfState property: %s", err)
 	}
