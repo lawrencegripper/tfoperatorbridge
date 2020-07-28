@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,24 +25,45 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type TerraformStateEncrypter interface {
+// TerraformStateCipher is a cipher interface for encrypting and decrypting terraform state
+type TerraformStateCipher interface {
 	Encrypt(dst, src []byte)
 	Decrypt(dst, src []byte)
 }
 
-// TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
-type TerraformReconciler struct {
-	provider  *plugin.GRPCProvider
-	client    client.Client
-	encrypter TerraformStateEncrypter
+// TerraformReconcilerOption is modifying function to add functionality to the TerraformReconciler struct
+type TerraformReconcilerOption func(*TerraformReconciler)
+
+// WithAesEncryption is an TerraformReconcilerOption to add AES cipher to terraform state
+func WithAesEncryption(encryptionKey string) TerraformReconcilerOption {
+	return func(r *TerraformReconciler) {
+		cipher, err := aes.NewCipher([]byte(encryptionKey))
+		if err != nil {
+			setupLog.Error(err, "unable to setup aes encryption")
+			os.Exit(1)
+		}
+		r.cipher = cipher
+	}
 }
 
-func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client, encrypter TerraformStateEncrypter) *TerraformReconciler {
-	return &TerraformReconciler{
-		provider:  provider,
-		client:    client,
-		encrypter: encrypter,
+// TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
+type TerraformReconciler struct {
+	provider *plugin.GRPCProvider
+	client   client.Client
+	cipher   TerraformStateCipher
+}
+
+func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client, opts ...TerraformReconcilerOption) *TerraformReconciler {
+	r := &TerraformReconciler{
+		provider: provider,
+		client:   client,
 	}
+
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	return r
 }
 
 type GetReferencedObjectValueResult struct {
@@ -202,9 +225,9 @@ func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unst
 	}
 	if gotTfState {
 		var stateBytes []byte
-		if r.encrypter != nil {
+		if r.cipher != nil {
 			var decryptedState []byte
-			r.encrypter.Decrypt(decryptedState, []byte(tfStateString))
+			r.cipher.Decrypt(decryptedState, []byte(tfStateString))
 			stateBytes = decryptedState
 		} else {
 			stateBytes = []byte(tfStateString)
@@ -228,9 +251,9 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 	}
 
 	stateStr := serializedState
-	if r.encrypter != nil {
+	if r.cipher != nil {
 		var encryptedState []byte
-		r.encrypter.Encrypt(encryptedState, serializedState)
+		r.cipher.Encrypt(encryptedState, serializedState)
 		stateStr = encryptedState
 	}
 
