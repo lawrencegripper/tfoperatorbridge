@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/hashicorp/terraform/plugin"
-	"golang.org/x/crypto/blowfish"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -131,7 +131,7 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 
 func getEncrypter() TerraformStateEncrypter {
 	if encryptionKey, exists := os.LookupEnv("ENCRYPTION_KEY"); exists {
-		encrypter, err := blowfish.NewCipher([]byte(encryptionKey))
+		encrypter, err := aes.NewCipher([]byte(encryptionKey))
 		if err != nil {
 			setupLog.Error(err, "unable to setup encryption")
 			os.Exit(1)
