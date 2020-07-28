@@ -1,6 +1,6 @@
 # Terraform Operator Bridge - Create K8s Operators from any Terraform Provider
 
-![Build status](https://github.com/lawrencegripper/tfoperatorbridge/workflows/.github/workflows/build/badge.svg)
+![build](https://github.com/lawrencegripper/tfoperatorbridge/workflows/build/badge.svg)
 
 Terraform Providers have been built out for lots of APIs such as Cloud providers or solutions. 
 
