@@ -23,16 +23,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
-type TerraformReconciler struct {
-	provider *plugin.GRPCProvider
-	client   client.Client
+type TerraformStateEncrypter interface {
+	Encrypt(dst, src []byte)
+	Decrypt(dst, src []byte)
 }
 
-func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client) *TerraformReconciler {
+// TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
+type TerraformReconciler struct {
+	provider  *plugin.GRPCProvider
+	client    client.Client
+	encrypter TerraformStateEncrypter
+}
+
+func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client, encrypter TerraformStateEncrypter) *TerraformReconciler {
 	return &TerraformReconciler{
-		provider: provider,
-		client:   client,
+		provider:  provider,
+		client:    client,
+		encrypter: encrypter,
 	}
 }
 
@@ -194,7 +201,16 @@ func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unst
 		return nil, err
 	}
 	if gotTfState {
-		unmashaledState, err := ctyjson.Unmarshal([]byte(tfStateString), schema.Block.ImpliedType())
+		var stateBytes []byte
+		if r.encrypter != nil {
+			var decryptedState []byte
+			r.encrypter.Decrypt(decryptedState, []byte(tfStateString))
+			stateBytes = decryptedState
+		} else {
+			stateBytes = []byte(tfStateString)
+		}
+
+		unmashaledState, err := ctyjson.Unmarshal(stateBytes, schema.Block.ImpliedType())
 		if err != nil {
 			return nil, err
 		}
@@ -205,11 +221,20 @@ func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unst
 }
 func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resource *unstructured.Unstructured, state *cty.Value) error {
 	copyResource := resource.DeepCopy()
+
 	serializedState, err := ctyjson.Marshal(*state, state.Type())
 	if err != nil {
 		return fmt.Errorf("Error marshalling state: %s", err)
 	}
-	err = unstructured.SetNestedField(resource.Object, string(serializedState), "status", "_tfoperator", "tfState")
+
+	stateStr := string(serializedState)
+	if r.encrypter != nil {
+		var encryptedState []byte
+		r.encrypter.Encrypt(encryptedState, serializedState)
+		stateStr = string(encryptedState)
+	}
+
+	err = unstructured.SetNestedField(resource.Object, stateStr, "status", "_tfoperator", "tfState")
 	if err != nil {
 		return fmt.Errorf("Error setting tfState property: %s", err)
 	}
