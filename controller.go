@@ -92,6 +92,11 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 		os.Exit(1)
 	}
 
+	var opts []TerraformReconcilerOption
+	if encryptionKey, exists := os.LookupEnv("ENCRYPTION_KEY"); exists && encryptionKey != "" {
+		opts = append(opts, WithAesEncryption(encryptionKey))
+	}
+
 	for _, gv := range resources {
 		groupVersionKind := gv.GroupVersionKind
 		setupLog.Info("Enabling controller for resource", "kind", gv.GroupVersionKind.Kind)
@@ -102,7 +107,7 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 			For(runtimeObjFromGVK(gv.GroupVersionKind), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 			Complete(&controller{
 				Client:       client,
-				tfReconciler: NewTerraformReconciler(provider, client),
+				tfReconciler: NewTerraformReconciler(provider, client, opts...),
 				scheme:       mgr.GetScheme(),
 				gvk:          &groupVersionKind,
 			})

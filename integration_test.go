@@ -2,7 +2,9 @@ package main_test
 
 import (
 	"context"
+	"encoding/json"
 	"math/rand"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -77,7 +79,22 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 
 				id := status["id"].(string)
 				return id
-			}, time.Second*10, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
+			}, time.Second*30, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
+		}, 30)
+		It("if encryption key set should have an encrypted terraform state", func() {
+			if encryptionKey, exists := os.LookupEnv("TF_STATE_ENCRYPTION_KEY"); !exists || encryptionKey == "" {
+				Skip("TF_STATE_ENCRYPTION_KEY not set!")
+			}
+			obj, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
+			Expect(err).To(BeNil())
+
+			tfStateString, gotTfState, err := unstructured.NestedString(obj.Object, "status", "_tfoperator", "tfState")
+			Expect(err).To(BeNil())
+			Expect(gotTfState).To(BeTrue(), "Terraform should have status._tfoperator.tfState property")
+
+			var js string
+			err = json.Unmarshal([]byte(tfStateString), &js)
+			Expect(err).ToNot(BeNil())
 		}, 30)
 	})
 	Context("When creating the storage account", func() {
@@ -144,7 +161,6 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 			Expect(err).To(BeNil())
 		})
 		It("should delete CRD", func() {
-
 			Eventually(func() bool {
 				_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
 				if err != nil {
@@ -226,7 +242,6 @@ var _ = Describe("When creating CRDs out of order with references", func() {
 		}, 30)
 	})
 	It("should retry and create the storage account and assign the status.id", func() {
-
 		By("returning the storage account ID")
 		Eventually(func() string {
 			obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
@@ -266,7 +281,6 @@ var _ = Describe("When creating CRDs out of order with references", func() {
 			Expect(err).To(BeNil())
 		})
 		It("should delete CRD", func() {
-
 			Eventually(func() bool {
 				_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
 				if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,17 +24,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// TerraformReconcilerOption is modifying function to add functionality to the TerraformReconciler struct
+type TerraformReconcilerOption func(*TerraformReconciler)
+
+// WithAesEncryption is an TerraformReconcilerOption to add AES cipher to terraform state
+func WithAesEncryption(encryptionKey string) TerraformReconcilerOption {
+	return func(r *TerraformReconciler) {
+		r.cipher = NewAesCipher([]byte(encryptionKey))
+	}
+}
+
 // TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
 type TerraformReconciler struct {
 	provider *plugin.GRPCProvider
 	client   client.Client
+	cipher   TerraformStateCipher
 }
 
-func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client) *TerraformReconciler {
-	return &TerraformReconciler{
+// NewTerraformReconciler creates a terraform reconciler
+func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client, opts ...TerraformReconcilerOption) *TerraformReconciler {
+	r := &TerraformReconciler{
 		provider: provider,
 		client:   client,
 	}
+
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	return r
 }
 
 type GetReferencedObjectValueResult struct {
@@ -194,7 +213,22 @@ func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unst
 		return nil, err
 	}
 	if gotTfState {
-		unmashaledState, err := ctyjson.Unmarshal([]byte(tfStateString), schema.Block.ImpliedType())
+		var stateBytes []byte
+		if r.cipher != nil {
+			decodedState, err := base64.StdEncoding.DecodeString(tfStateString)
+			if err != nil {
+				return nil, fmt.Errorf("Error decoding terraform state: %+v", err)
+			}
+			decryptedState, err := r.cipher.Decrypt(string(decodedState))
+			if err != nil {
+				return nil, fmt.Errorf("Error decrypting terraform state: %+v", err)
+			}
+			stateBytes = []byte(decryptedState)
+		} else {
+			stateBytes = []byte(tfStateString)
+		}
+
+		unmashaledState, err := ctyjson.Unmarshal(stateBytes, schema.Block.ImpliedType())
 		if err != nil {
 			return nil, err
 		}
@@ -205,11 +239,25 @@ func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unst
 }
 func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resource *unstructured.Unstructured, state *cty.Value) error {
 	copyResource := resource.DeepCopy()
+
 	serializedState, err := ctyjson.Marshal(*state, state.Type())
 	if err != nil {
 		return fmt.Errorf("Error marshalling state: %s", err)
 	}
-	err = unstructured.SetNestedField(resource.Object, string(serializedState), "status", "_tfoperator", "tfState")
+
+	var stateBytes []byte
+	if r.cipher != nil {
+		encryptedState, err := r.cipher.Encrypt(string(serializedState))
+		if err != nil {
+			return err
+		}
+		encodedState := base64.StdEncoding.EncodeToString([]byte(encryptedState))
+		stateBytes = []byte(encodedState)
+	} else {
+		stateBytes = serializedState
+	}
+
+	err = unstructured.SetNestedField(resource.Object, string(stateBytes), "status", "_tfoperator", "tfState")
 	if err != nil {
 		return fmt.Errorf("Error setting tfState property: %s", err)
 	}

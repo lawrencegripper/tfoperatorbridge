@@ -64,6 +64,7 @@ endif
 		-e ARM_SUBSCRIPTION_ID="${ARM_SUBSCRIPTION_ID}" \
 		-e ARM_TENANT_ID="$(ARM_TENANT_ID)" \
 		-e PROVIDER_CONFIG_HCL="features {}" \
+		-e TF_STATE_ENCRYPTION_KEY="$(TF_STATE_ENCRYPTION_KEY)" \
 		--privileged \
 		--device /dev/fuse \
 		--network=host \
