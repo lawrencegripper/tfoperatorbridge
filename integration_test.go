@@ -82,8 +82,8 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 			}, time.Second*10, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
 		}, 30)
 		It("if encryption key set should have an encrypted terraform state", func() {
-			if _, exists := os.LookupEnv("ENCRYPTION_KEY"); exists {
-				Skip("ENCRYPTION_KEY not set!")
+			if _, exists := os.LookupEnv("TF_STATE_ENCRYPTION_KEY"); exists {
+				Skip("TF_STATE_ENCRYPTION_KEY not set!")
 			}
 			obj, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
 			Expect(err).To(BeNil())
