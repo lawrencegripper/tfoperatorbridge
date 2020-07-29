@@ -527,9 +527,25 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 	return nil
 }
 
-func getStatusForAttribute(key string, value *cty.Value, schema *configschema.Block) (interface{}, error) {
-	attr := schema.Attributes[key]
-	attrType := attr.Type
+func getStatusForAttribute(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
+	if value.IsNull() {
+		log.Printf("key %s is null, skipping\n", key)
+		return nil, nil
+	}
+	log.Printf("key: %s, value: %+v, schema: %+v\n", key, value, block)
+
+	// TODO: Fix nested block keys
+	attr, exists := block.Attributes[key]
+	var attrType cty.Type
+	if !exists {
+		if _, isABlock := block.BlockTypes[key]; !isABlock {
+			log.Printf("key %s not found in schema block %+v, skipping\n", key, block)
+			return nil, nil
+		}
+		attrType = cty.Map(cty.String)
+	} else {
+		attrType = attr.Type
+	}
 
 	if attrType.Equals(cty.String) {
 		if attr.Sensitive {
@@ -544,7 +560,7 @@ func getStatusForAttribute(key string, value *cty.Value, schema *configschema.Bl
 		valueMap := value.AsValueMap()
 		nestedMap := make(map[string]interface{})
 		for k, v := range valueMap {
-			nestedBlock := schema.BlockTypes[key]
+			nestedBlock := block.BlockTypes[key]
 			nestedValue, err := getStatusForAttribute(k, &v, &nestedBlock.Block)
 			if err != nil {
 				return nil, err
@@ -556,7 +572,7 @@ func getStatusForAttribute(key string, value *cty.Value, schema *configschema.Bl
 		valueList := value.AsValueSlice()
 		list := make([]interface{}, len(valueList))
 		for _, item := range valueList {
-			value, err := getStatusForAttribute(key, &item, schema)
+			value, err := getStatusForAttribute(key, &item, block)
 			if err != nil {
 				return nil, err
 			}
@@ -567,7 +583,7 @@ func getStatusForAttribute(key string, value *cty.Value, schema *configschema.Bl
 		valueSet := value.AsValueSet().Values()
 		list := make([]interface{}, len(valueSet))
 		for _, item := range valueSet {
-			value, err := getStatusForAttribute(key, &item, schema)
+			value, err := getStatusForAttribute(key, &item, block)
 			if err != nil {
 				return nil, err
 			}
