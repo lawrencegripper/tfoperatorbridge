@@ -540,7 +540,7 @@ func getStatusForAttribute(key string, value *cty.Value, schema *configschema.Bl
 		return value.True(), nil
 	} else if attrType.Equals(cty.Number) {
 		return value.AsBigFloat().Float64, nil
-	} else if attrType.IsMapType() || attrType.IsListType() || attrType.IsSetType() {
+	} else if attrType.IsMapType() {
 		valueMap := value.AsValueMap()
 		nestedMap := make(map[string]interface{})
 		for k, v := range valueMap {
@@ -552,6 +552,28 @@ func getStatusForAttribute(key string, value *cty.Value, schema *configschema.Bl
 			nestedMap[k] = nestedValue
 		}
 		return nestedMap, nil
+	} else if attrType.IsListType() {
+		valueList := value.AsValueSlice()
+		list := make([]interface{}, len(valueList))
+		for _, item := range valueList {
+			value, err := getStatusForAttribute(key, &item, schema)
+			if err != nil {
+				return nil, err
+			}
+			list = append(list, value)
+		}
+		return list, nil
+	} else if attrType.IsSetType() {
+		valueSet := value.AsValueSet().Values()
+		list := make([]interface{}, len(valueSet))
+		for _, item := range valueSet {
+			value, err := getStatusForAttribute(key, &item, schema)
+			if err != nil {
+				return nil, err
+			}
+			list = append(list, value)
+		}
+		return list, nil
 	}
 
 	return nil, fmt.Errorf("[Error] Unknown type on attribute. Skipping %v", key)
