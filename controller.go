@@ -93,7 +93,7 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 	}
 
 	var opts []TerraformReconcilerOption
-	if encryptionKey, exists := os.LookupEnv("ENCRYPTION_KEY"); exists {
+	if encryptionKey, exists := os.LookupEnv("ENCRYPTION_KEY"); exists && encryptionKey != "" {
 		opts = append(opts, WithAesEncryption(encryptionKey))
 	}
 
