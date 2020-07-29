@@ -79,7 +79,7 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 
 				id := status["id"].(string)
 				return id
-			}, time.Second*10, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
+			}, time.Second*30, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
 		}, 30)
 		It("if encryption key set should have an encrypted terraform state", func() {
 			if encryptionKey, exists := os.LookupEnv("TF_STATE_ENCRYPTION_KEY"); !exists || encryptionKey == "" {
