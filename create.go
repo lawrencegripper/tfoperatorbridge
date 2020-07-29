@@ -140,6 +140,7 @@ func getSchemaForType(name string, item *cty.Type) *openapi_spec.Schema {
 
 		// Handle more complex types - map, set and list
 	} else if item.IsMapType() {
+		// Question: Is this not an infinite loop?
 		mapType := getSchemaForType(name+"mapType", item.MapElementType())
 		property = openapi_spec.MapProperty(mapType)
 	} else if item.IsListType() {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/hashicorp/terraform/configs/configschema"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
 	"github.com/zclconf/go-cty/cty"
@@ -142,7 +143,8 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		if err = r.setProvisioningState(crd, "Created"); err != nil { // TODO define the states!
 			return reconcileLogError(log, fmt.Errorf("Error saving provisioning state applied: %s", err))
 		}
-		if err = r.applyTerraformValueToCrdStatus(newState, crd); err != nil {
+		// TODO: Rename to mapTerraformValueToCrdStatus
+		if err = r.applyTerraformValueToCrdStatus(schema, newState, crd); err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error mapping Terraform value to CRD status: %s", err))
 		}
 		if err = r.saveResourceStatus(ctx, crdPreStateChanges, crd); err != nil {
@@ -497,7 +499,7 @@ func (r *TerraformReconciler) getReferencedObjectValue(ctx context.Context, refe
 	}
 }
 
-func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, crd *unstructured.Unstructured) error {
+func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Schema, value *cty.Value, crd *unstructured.Unstructured) error {
 	valueMap := value.AsValueMap()
 
 	status, gotStatus, err := unstructured.NestedMap(crd.Object, "status")
@@ -507,8 +509,15 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, c
 	if !gotStatus {
 		status = map[string]interface{}{}
 	}
-	// TODO  - drive this from the CRD status schema
-	status["id"] = valueMap["id"].AsString()
+
+	for k, v := range valueMap {
+		// find the attr in the schema
+		value, err := getStatusForAttribute(k, &v, schema.Block)
+		if err != nil {
+			return err
+		}
+		status[k] = value
+	}
 
 	err = unstructured.SetNestedMap(crd.Object, status, "status")
 	if err != nil {
@@ -516,6 +525,36 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, c
 	}
 
 	return nil
+}
+
+func getStatusForAttribute(key string, value *cty.Value, schema *configschema.Block) (interface{}, error) {
+	attr := schema.Attributes[key]
+	attrType := attr.Type
+
+	if attrType.Equals(cty.String) {
+		if attr.Sensitive {
+			// encrypt
+		}
+		return value.AsString(), nil
+	} else if attrType.Equals(cty.Bool) {
+		return value.True(), nil
+	} else if attrType.Equals(cty.Number) {
+		return value.AsBigFloat().Float64, nil
+	} else if attrType.IsMapType() || attrType.IsListType() || attrType.IsSetType() {
+		valueMap := value.AsValueMap()
+		nestedMap := make(map[string]interface{})
+		for k, v := range valueMap {
+			nestedBlock := schema.BlockTypes[key]
+			nestedValue, err := getStatusForAttribute(k, &v, &nestedBlock.Block)
+			if err != nil {
+				return nil, err
+			}
+			nestedMap[k] = nestedValue
+		}
+		return nestedMap, nil
+	}
+
+	return nil, fmt.Errorf("[Error] Unknown type on attribute. Skipping %v", key)
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
