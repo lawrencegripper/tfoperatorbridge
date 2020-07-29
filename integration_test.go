@@ -89,6 +89,7 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 			Expect(err).To(BeNil())
 
 			tfStateString, gotTfState, err := unstructured.NestedString(obj.Object, "status", "_tfoperator", "tfState")
+			Expect(err).To(BeNil())
 			Expect(gotTfState).To(BeTrue(), "Terraform should have status._tfoperator.tfState property")
 
 			var js string
