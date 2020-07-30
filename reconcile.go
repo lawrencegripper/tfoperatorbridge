@@ -515,7 +515,7 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 	}
 
 	for k, v := range valueMap {
-		value, err := r.getValueFromCtyValue(k, &v, schema.Block)
+		value, err := r.getValueFromCtyValue(k, &v, schema.Block) //nolint: govet
 		if err != nil {
 			return err
 		}
@@ -564,7 +564,7 @@ func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configsch
 	return nil, fmt.Errorf("Unable to find attribute or block with the key %s", key)
 }
 
-// TODO: Write tests to validate behaviour
+// TODO: Write tests to validate behavior
 func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
 	if value.IsNull() {
 		// log.Printf("key %s has null value\n", key) // TODO: uncomment when debug logging supported
