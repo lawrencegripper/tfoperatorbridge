@@ -3,9 +3,6 @@ DEV_CONTAINER_TAG:=devcontainer
 build: checks
 	go build .
 
-checks:
-	golangci-lint run
-
 run: kind-create terraform-hack-init
 	@echo "==> Attempting to sourcing .env file"
 	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
@@ -30,10 +27,13 @@ integration-tests: run
 	ginkgo  -v
 
 lint:
-	golangci-lint run ./... -v
+	golangci-lint run
 
 fmt:
 	find . -name '*.go' | grep -v vendor | xargs gofmt -s -w
+
+docs:
+	mdspell --en-gb --report **/*.md
 
 ci: lint fmt integration-tests
 
