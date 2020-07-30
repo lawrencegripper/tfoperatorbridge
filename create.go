@@ -57,7 +57,7 @@ func createCRDsForResources(provider *terraform_plugin.GRPCProvider) []GroupVers
 
 		// Given the schema block for the tf resources add the properties to
 		// either spec or status objects created above
-		addBlockToSchema(&statusCRD, &specCRD, "root", resource.Block)
+		addBlockToSchema(&statusCRD, &specCRD, resource.Block)
 
 		// Add tf operator property
 		statusCRD.Properties["_tfoperator"] = openapi_spec.Schema{
@@ -93,7 +93,8 @@ func createCRDsForResources(provider *terraform_plugin.GRPCProvider) []GroupVers
 }
 
 // This walks the schema and adds the fields to spec/status based on whether they're computed or not.
-func addBlockToSchema(statusCRD, specCRD *openapi_spec.Schema, blockName string, block *terraform_schema.Block) {
+func addBlockToSchema(statusCRD, specCRD *openapi_spec.Schema, block *terraform_schema.Block) {
+	// For the attributes in this block
 	for attributeName, attribute := range block.Attributes {
 		// Computer attributes from Terraform map to the `status` block in K8s CRDS
 		if attribute.Computed {
@@ -111,6 +112,21 @@ func addBlockToSchema(statusCRD, specCRD *openapi_spec.Schema, blockName string,
 			}
 			addAttributeToSchema(specCRD, attributeName, attribute)
 		}
+	}
+
+	// For the attributes in child blocks add sub schemas
+	for k, v := range block.BlockTypes {
+		nestedSpecCRD := &openapi_spec.Schema{}
+		nestedStatusCRD := &openapi_spec.Schema{}
+		addBlockToSchema(nestedSpecCRD, nestedStatusCRD, &v.Block)
+		if specCRD.Properties == nil {
+			specCRD.Properties = map[string]openapi_spec.Schema{}
+		}
+		if statusCRD.Properties == nil {
+			statusCRD.Properties = map[string]openapi_spec.Schema{}
+		}
+		specCRD.Properties[k] = *nestedSpecCRD
+		statusCRD.Properties[k] = *nestedStatusCRD
 	}
 }
 
