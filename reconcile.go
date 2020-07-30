@@ -554,6 +554,7 @@ func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configsch
 		if a == nil && e == nil {
 			return nil, nil // We found a block
 		}
+		// An error here just indicates we couldn't find the attribute or child block in the current block - we should keep looking
 	}
 
 	return nil, fmt.Errorf("Unable to find attribute or block with the key %s", key)
@@ -568,7 +569,7 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 	// Get the attribute for this cty key
 	attr, err := r.getAttributeForCtyKey(key, block)
 	if err != nil {
-		log.Printf("Key not found in schema %s, skipping\n", key)
+		log.Printf("Key not found in schema. Skipping %s\n", key)
 		return nil, nil
 	}
 	var sensitive bool
@@ -632,7 +633,7 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 		return list, nil
 	}
 
-	return nil, fmt.Errorf("Value type is unknown %+v. Skipping %v", ctyType.GoString(), key)
+	return nil, fmt.Errorf("Value type is unknown %+v. Skipping key %v", ctyType.GoString(), key)
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
