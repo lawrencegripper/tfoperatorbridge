@@ -535,7 +535,7 @@ func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configsch
 	// Is the attribute in this block?
 	for k, v := range block.Attributes {
 		if k == key {
-			log.Printf("Key %s found", key)
+			// log.Printf("Key %s found", key) // TODO: uncomment when debug logging supported
 			return v, nil
 		}
 	}
@@ -544,7 +544,7 @@ func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configsch
 	for bKey, bVal := range block.BlockTypes {
 		// Is the key a block?
 		if bKey == key {
-			log.Printf("Key %s is a nested block", bKey)
+			// log.Printf("Key %s is a nested block", bKey)  // TODO: uncomment when debug logging supported
 			return nil, nil // nil, nil indicates this key belongs to a block not an attribute
 		}
 		a, e := r.getAttributeForCtyKey(bKey, &bVal.Block)
@@ -562,7 +562,7 @@ func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configsch
 
 func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
 	if value.IsNull() {
-		log.Printf("key %s has null value\n", key)
+		// log.Printf("key %s has null value\n", key) // TODO: uncomment when debug logging supported
 		return nil, nil
 	}
 
