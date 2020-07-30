@@ -511,10 +511,34 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 	}
 
 	for k, v := range valueMap {
-		// find the attr in the schema
-		value, err := getStatusForAttribute(k, &v, schema.Block)
+		attr, err := getAttributeForCtyKey(k, *schema.Block)
 		if err != nil {
 			return err
+		}
+		var sensitive bool
+		// Blocks don't have attributes in the schema but still represent a value
+		isBlock := (attr == nil)
+		if isBlock {
+			sensitive = false // Blocks can't be sensitive
+		} else {
+			sensitive = attr.Sensitive
+		}
+
+		value, err := getValueFromCtyValue(k, &v)
+		if err != nil {
+			return err
+		}
+
+		// If sensitive...
+		if sensitive {
+			// and a string, encrypt the value
+			s, ok := value.(string)
+			if ok {
+				value, err = r.cipher.Encrypt(s)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		status[k] = value
 	}
@@ -527,63 +551,69 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 	return nil
 }
 
-func getStatusForAttribute(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
+func getAttributeForCtyKey(key string, block configschema.Block) (*configschema.Attribute, error) {
+	// Is the attribute in this block?
+	for k, v := range block.Attributes {
+		if k == key {
+			return v, nil
+		}
+	}
+
+	// Is the attribute in a child
+	for k, v := range block.BlockTypes {
+		// Is the key a block?
+		if k == key {
+			return nil, nil // nil, nil indicates a block
+		}
+		a, _ := getAttributeForCtyKey(key, v.Block)
+		if a != nil {
+			return a, nil
+		}
+	}
+
+	return nil, fmt.Errorf("Unable to find attribute with the key %s", key)
+}
+
+func getValueFromCtyValue(key string, value *cty.Value) (interface{}, error) {
 	if value.IsNull() {
-		log.Printf("key %s is null, skipping\n", key)
+		log.Printf("value for key %s is null\n", key)
 		return nil, nil
 	}
-	log.Printf("key: %s, value: %+v, schema: %+v\n", key, value, block)
 
-	// TODO: Fix nested block keys
-	attr, exists := block.Attributes[key]
-	var attrType cty.Type
-	if !exists {
-		if _, isABlock := block.BlockTypes[key]; !isABlock {
-			log.Printf("key %s not found in schema block %+v, skipping\n", key, block)
-			return nil, nil
-		}
-		attrType = cty.Map(cty.String)
-	} else {
-		attrType = attr.Type
-	}
-
-	if attrType.Equals(cty.String) {
-		if attr.Sensitive {
-			// encrypt
-		}
+	ctyType := value.Type()
+	if ctyType.Equals(cty.String) {
 		return value.AsString(), nil
-	} else if attrType.Equals(cty.Bool) {
+	} else if ctyType.Equals(cty.Bool) {
 		return value.True(), nil
-	} else if attrType.Equals(cty.Number) {
+	} else if ctyType.Equals(cty.Number) {
 		return value.AsBigFloat().Float64, nil
-	} else if attrType.IsMapType() {
+	} else if ctyType.IsMapType() {
 		valueMap := value.AsValueMap()
 		nestedMap := make(map[string]interface{})
 		for k, v := range valueMap {
-			nestedBlock := block.BlockTypes[key]
-			nestedValue, err := getStatusForAttribute(k, &v, &nestedBlock.Block)
+			nestedValue, err := getValueFromCtyValue(k, &v)
 			if err != nil {
 				return nil, err
 			}
 			nestedMap[k] = nestedValue
 		}
 		return nestedMap, nil
-	} else if attrType.IsListType() {
+	} else if ctyType.IsListType() {
 		valueList := value.AsValueSlice()
 		list := make([]interface{}, len(valueList))
 		for _, item := range valueList {
-			value, err := getStatusForAttribute(key, &item, block)
+			value, err := getValueFromCtyValue(key, &item)
 			if err != nil {
 				return nil, err
 			}
 			list = append(list, value)
 		}
 		return list, nil
-	} else if attrType.IsSetType() {
+	} else if ctyType.IsSetType() {
 		valueSet := value.AsValueSet().Values()
 		list := make([]interface{}, len(valueSet))
 		for _, item := range valueSet {
-			value, err := getStatusForAttribute(key, &item, block)
+			value, err := getValueFromCtyValue(key, &item)
 			if err != nil {
 				return nil, err
 			}
