@@ -26,8 +26,13 @@ integration-tests: run
 	./scripts/wait-for-bridge.sh
 	ginkgo  -v
 
-lint:
+lint: lint-go lint-shell
+	
+lint-go:
 	golangci-lint run
+
+lint-shell:
+	@find scripts -name '*.sh' | xargs shellcheck -x
 
 fmt:
 	find . -name '*.go' | grep -v vendor | xargs gofmt -s -w
