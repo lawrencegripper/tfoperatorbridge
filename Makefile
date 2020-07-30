@@ -1,6 +1,6 @@
 DEV_CONTAINER_TAG:=devcontainer
 
-build: checks
+build: lint
 	go build .
 
 run: kind-create terraform-hack-init
