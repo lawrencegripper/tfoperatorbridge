@@ -34,7 +34,9 @@ RUN apt-get update \
     && apt install -y rpm \
     # Install python3
     && apt-get -y install python3-pip \
-    && apt-get -y install bash-completion
+    && apt-get -y install bash-completion \
+    # Install shellcheck
+    && apt-get -y install shellcheck
 
 # Setup locale as required by snapd: https://stackoverflow.com/questions/28405902/how-to-set-the-locale-inside-a-debian-ubuntu-docker-container
 RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
@@ -54,7 +56,6 @@ RUN echo "source /usr/share/bash-completion/bash_completion" >> "/root/.bashrc"
 # Git command prompt
 RUN git clone https://github.com/magicmonty/bash-git-prompt.git ~/.bash-git-prompt --depth=1 \
     && echo "if [ -f \"$HOME/.bash-git-prompt/gitprompt.sh\" ]; then GIT_PROMPT_ONLY_IN_REPO=1 && source $HOME/.bash-git-prompt/gitprompt.sh; fi" >> "/root/.bashrc"
-
 
 ENV DEVCONTAINER="TRUE"
 
