@@ -515,7 +515,6 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 		if err != nil {
 			return err
 		}
-
 		status[k] = value
 	}
 
@@ -544,7 +543,7 @@ func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configsch
 	for bKey, bVal := range block.BlockTypes {
 		// Is the key a block?
 		if bKey == key {
-			// log.Printf("Key %s is a nested block", bKey)  // TODO: uncomment when debug logging supported
+			// log.Printf("Key %s is a nested block", bKey) // TODO: uncomment when debug logging supported
 			return nil, nil // nil, nil indicates this key belongs to a block not an attribute
 		}
 		a, e := r.getAttributeForCtyKey(bKey, &bVal.Block)
@@ -574,12 +573,16 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 		return nil, nil
 	}
 	var sensitive bool
+	var nextBlock *configschema.Block
 	// Blocks are not attributes in the schema but still represent a value
 	isBlock := (attr == nil)
 	if isBlock {
 		sensitive = false // Blocks can't be sensitive
+		nestedBlock := block.BlockTypes[key]
+		nextBlock = &nestedBlock.Block
 	} else {
 		sensitive = attr.Sensitive
+		nextBlock = block
 	}
 
 	ctyType := value.Type()
@@ -598,12 +601,13 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 	} else if ctyType.Equals(cty.Bool) {
 		return value.True(), nil
 	} else if ctyType.Equals(cty.Number) {
-		return value.AsBigFloat().Float64, nil
+		f64, _ := value.AsBigFloat().Float64()
+		return f64, nil
 	} else if ctyType.IsMapType() || ctyType.IsObjectType() {
 		valueMap := value.AsValueMap()
 		nestedMap := make(map[string]interface{})
 		for k, v := range valueMap {
-			nestedValue, err := r.getValueFromCtyValue(k, &v, block)
+			nestedValue, err := r.getValueFromCtyValue(k, &v, nextBlock)
 			if err != nil {
 				return nil, err
 			}
@@ -618,6 +622,9 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 			if err != nil {
 				return nil, err
 			}
+			if value == nil {
+				continue
+			}
 			list = append(list, value)
 		}
 		return list, nil
@@ -625,9 +632,12 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 		valueSet := value.AsValueSet().Values()
 		list := make([]interface{}, len(valueSet))
 		for _, item := range valueSet {
-			value, err := r.getValueFromCtyValue(key, &item, block)
+			value, err := r.getValueFromCtyValue(key, &item, nextBlock)
 			if err != nil {
 				return nil, err
+			}
+			if value == nil {
+				continue
 			}
 			list = append(list, value)
 		}

@@ -138,6 +138,7 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 				Expect(name).Should(Not(BeEmpty()))
 				primaryAccessKey := status["primary_access_key"].(string)
 				Expect(primaryAccessKey).Should(Not(BeEmpty()))
+
 				return true
 			}, time.Minute*3, time.Second*5).Should(BeTrue())
 		}, 300)
