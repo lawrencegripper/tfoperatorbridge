@@ -1,4 +1,4 @@
-FROM golang:1.14.4-stretch
+FROM golang:1.14.4-buster
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -61,6 +61,11 @@ ENV DEVCONTAINER="TRUE"
 
 # Install docker used by go releaser
 RUN bash -c "cd /tmp && curl -fsSLO https://download.docker.com/linux/static/stable/x86_64/docker-19.03.5.tgz && tar --strip-components=1 -xvzf docker-19.03.5.tgz -C /usr/local/bin"
+
+# Install mdspell 
+RUN \
+    apt-get install -y nodejs npm \
+    && npm i markdown-spellcheck -g
 
 # Install Go tools
 RUN \
