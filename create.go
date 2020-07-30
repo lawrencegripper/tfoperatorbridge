@@ -155,7 +155,7 @@ func getSchemaForType(name string, item *cty.Type) *openapi_spec.Schema {
 	return property
 }
 
-// Todo: Check if this type already existing of if simpler way to handle tracking both Kind and Resource
+// GroupVersionFull provides both the groupVersionKind and groupVersionResource representations of the CRD. Todo: Investigate if existing types can supply this.
 type GroupVersionFull struct {
 	GroupVersionKind     k8s_schema.GroupVersionKind
 	GroupVersionResource k8s_schema.GroupVersionResource

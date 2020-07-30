@@ -1,6 +1,6 @@
 DEV_CONTAINER_TAG:=devcontainer
 
-build: 
+build: lint
 	go build .
 
 run: kind-create terraform-hack-init
@@ -27,10 +27,13 @@ integration-tests: run
 	ginkgo  -v
 
 lint:
-	golangci-lint run ./... -v
+	golangci-lint run
 
 fmt:
 	find . -name '*.go' | grep -v vendor | xargs gofmt -s -w
+
+docs:
+	mdspell --en-gb --report **/*.md
 
 ci: lint fmt integration-tests
 
