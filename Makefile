@@ -16,6 +16,9 @@ kind-delete:
 	@echo "Delete cluster tob"
 	kind delete cluster --name tob
 
+kill-tfbridge: kind-delete
+	pkill -f tfoperatorbridge
+
 terraform-hack-init:
 	./hack/init.sh
 

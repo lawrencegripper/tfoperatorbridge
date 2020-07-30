@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/hashicorp/terraform/configs/configschema"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
 	"github.com/zclconf/go-cty/cty"
@@ -142,7 +143,8 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		if err = r.setProvisioningState(crd, "Created"); err != nil { // TODO define the states!
 			return reconcileLogError(log, fmt.Errorf("Error saving provisioning state applied: %s", err))
 		}
-		if err = r.applyTerraformValueToCrdStatus(newState, crd); err != nil {
+		// TODO: Rename to mapTerraformValueToCrdStatus
+		if err = r.applyTerraformValueToCrdStatus(schema, newState, crd); err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error mapping Terraform value to CRD status: %s", err))
 		}
 		if err = r.saveResourceStatus(ctx, crdPreStateChanges, crd); err != nil {
@@ -497,7 +499,7 @@ func (r *TerraformReconciler) getReferencedObjectValue(ctx context.Context, refe
 	}
 }
 
-func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, crd *unstructured.Unstructured) error {
+func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Schema, value *cty.Value, crd *unstructured.Unstructured) error {
 	valueMap := value.AsValueMap()
 
 	status, gotStatus, err := unstructured.NestedMap(crd.Object, "status")
@@ -507,8 +509,15 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, c
 	if !gotStatus {
 		status = map[string]interface{}{}
 	}
-	// TODO  - drive this from the CRD status schema
-	status["id"] = valueMap["id"].AsString()
+
+	for k, v := range valueMap {
+		value, err := r.getValueFromCtyValue(k, &v, schema.Block)
+		if err != nil {
+			return err
+		}
+
+		status[k] = value
+	}
 
 	err = unstructured.SetNestedMap(crd.Object, status, "status")
 	if err != nil {
@@ -516,6 +525,116 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(value *cty.Value, c
 	}
 
 	return nil
+}
+
+func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configschema.Block) (*configschema.Attribute, error) {
+	if block == nil {
+		return nil, fmt.Errorf("Cannot find attribute in nil block")
+	}
+
+	// Is the attribute in this block?
+	for k, v := range block.Attributes {
+		if k == key {
+			// log.Printf("Key %s found", key) // TODO: uncomment when debug logging supported
+			return v, nil
+		}
+	}
+
+	// Is the attribute in a child block?
+	for bKey, bVal := range block.BlockTypes {
+		// Is the key a block?
+		if bKey == key {
+			// log.Printf("Key %s is a nested block", bKey)  // TODO: uncomment when debug logging supported
+			return nil, nil // nil, nil indicates this key belongs to a block not an attribute
+		}
+		a, e := r.getAttributeForCtyKey(bKey, &bVal.Block)
+		if a != nil {
+			return a, nil // We found an attribute
+		}
+		if a == nil && e == nil {
+			return nil, nil // We found a block
+		}
+		// An error here just indicates we couldn't find the attribute or child block in the current block - we should keep looking
+	}
+
+	return nil, fmt.Errorf("Unable to find attribute or block with the key %s", key)
+}
+
+// TODO: Write tests to validate behaviour
+func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
+	if value.IsNull() {
+		// log.Printf("key %s has null value\n", key) // TODO: uncomment when debug logging supported
+		return nil, nil
+	}
+
+	// Get the attribute for this cty key
+	attr, err := r.getAttributeForCtyKey(key, block)
+	if err != nil {
+		log.Printf("Key not found in schema. Skipping %s\n", key)
+		return nil, nil
+	}
+	var sensitive bool
+	// Blocks are not attributes in the schema but still represent a value
+	isBlock := (attr == nil)
+	if isBlock {
+		sensitive = false // Blocks can't be sensitive
+	} else {
+		sensitive = attr.Sensitive
+	}
+
+	ctyType := value.Type()
+	if ctyType.Equals(cty.String) {
+		s := value.AsString()
+		if sensitive {
+			if r.cipher != nil {
+				log.Printf("Key %s is sensitive, encrypting value", key)
+				s, err = r.cipher.Encrypt(s)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		return s, nil
+	} else if ctyType.Equals(cty.Bool) {
+		return value.True(), nil
+	} else if ctyType.Equals(cty.Number) {
+		return value.AsBigFloat().Float64, nil
+	} else if ctyType.IsMapType() || ctyType.IsObjectType() {
+		valueMap := value.AsValueMap()
+		nestedMap := make(map[string]interface{})
+		for k, v := range valueMap {
+			nestedValue, err := r.getValueFromCtyValue(k, &v, block)
+			if err != nil {
+				return nil, err
+			}
+			nestedMap[k] = nestedValue
+		}
+		return nestedMap, nil
+	} else if ctyType.IsListType() {
+		valueList := value.AsValueSlice()
+		list := make([]interface{}, len(valueList))
+		for _, item := range valueList {
+			value, err := r.getValueFromCtyValue(key, &item, block)
+			if err != nil {
+				return nil, err
+			}
+			list = append(list, value)
+		}
+		return list, nil
+	} else if ctyType.IsSetType() {
+		valueSet := value.AsValueSet().Values()
+		list := make([]interface{}, len(valueSet))
+		for _, item := range valueSet {
+			value, err := r.getValueFromCtyValue(key, &item, block)
+			if err != nil {
+				return nil, err
+			}
+			list = append(list, value)
+		}
+		return list, nil
+	}
+
+	return nil, fmt.Errorf("Value type is unknown %+v. Skipping key %v", ctyType.GoString(), key)
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
