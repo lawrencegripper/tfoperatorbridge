@@ -118,7 +118,7 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 			_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Create(context.TODO(), &objStorageAccount, metav1.CreateOptions{})
 			Expect(err).To(BeNil())
 		}, 30)
-		It("should create the storage account and assign the status.id", func() {
+		It("should create the storage account and assign the status", func() {
 			By("returning the storage account ID")
 			Eventually(func() string {
 				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
@@ -133,8 +133,34 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 				id := status["id"].(string)
 				return id
 			}, time.Minute*3, time.Second*5).Should(Not(BeEmpty())) // TODO check id format
+			By("returning the storage account name")
+			Eventually(func() string {
+				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+				Expect(err).To(BeNil())
 
-			// TODO - check other `status` properties when we're mapping them
+				status, ok := obj.Object["status"].(map[string]interface{})
+				Expect(err).To(BeNil())
+				if !ok {
+					return ""
+				}
+
+				name := status["name"].(string)
+				return name
+			}, time.Minute*3, time.Second*5).Should(Not(BeEmpty()))
+			By("returning the storage account primary_access_key")
+			Eventually(func() string {
+				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+				Expect(err).To(BeNil())
+
+				status, ok := obj.Object["status"].(map[string]interface{})
+				Expect(err).To(BeNil())
+				if !ok {
+					return ""
+				}
+
+				primaryAccessKey := status["primary_access_key"].(string)
+				return primaryAccessKey
+			}, time.Minute*3, time.Second*5).Should(Not(BeEmpty()))
 		}, 300)
 	})
 	Context("When deleting the storage account", func() {
