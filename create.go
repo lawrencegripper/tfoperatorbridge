@@ -47,6 +47,7 @@ func createCRDsForResources(provider *terraform_plugin.GRPCProvider) []GroupVers
 				Required: []string{},
 			},
 		}
+		// statusCRD is ONLY set for documentation purposes and is not currently enforced in reconciliation
 		statusCRD := openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
 				Type:     openapi_spec.StringOrArray{"object"},
@@ -137,7 +138,6 @@ func getSchemaForType(name string, item *cty.Type) *openapi_spec.Schema {
 		property = openapi_spec.BoolProperty()
 	} else if item.Equals(cty.Number) {
 		property = openapi_spec.Float64Property()
-
 		// Handle more complex types - map, set and list
 	} else if item.IsMapType() {
 		// Question: Is this not an infinite loop?

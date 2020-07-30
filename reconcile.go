@@ -511,35 +511,11 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 	}
 
 	for k, v := range valueMap {
-		attr, err := getAttributeForCtyKey(k, *schema.Block)
-		if err != nil {
-			return err
-		}
-		var sensitive bool
-		// Blocks don't have attributes in the schema but still represent a value
-		isBlock := (attr == nil)
-		if isBlock {
-			sensitive = false // Blocks can't be sensitive
-		} else {
-			sensitive = attr.Sensitive
-		}
-
-		value, err := getValueFromCtyValue(k, &v)
+		value, err := r.getValueFromCtyValue(k, &v, schema.Block)
 		if err != nil {
 			return err
 		}
 
-		// If sensitive...
-		if sensitive {
-			// and a string, encrypt the value
-			s, ok := value.(string)
-			if ok {
-				value, err = r.cipher.Encrypt(s)
-				if err != nil {
-					return err
-				}
-			}
-		}
 		status[k] = value
 	}
 
@@ -551,47 +527,81 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 	return nil
 }
 
-func getAttributeForCtyKey(key string, block configschema.Block) (*configschema.Attribute, error) {
+func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configschema.Block) (*configschema.Attribute, error) {
+	if block == nil {
+		return nil, fmt.Errorf("Cannot find attribute in nil block")
+	}
+
 	// Is the attribute in this block?
 	for k, v := range block.Attributes {
 		if k == key {
+			log.Printf("Key %s found", key)
 			return v, nil
 		}
 	}
 
-	// Is the attribute in a child
-	for k, v := range block.BlockTypes {
+	// Is the attribute in a child block?
+	for bKey, bVal := range block.BlockTypes {
 		// Is the key a block?
-		if k == key {
-			return nil, nil // nil, nil indicates a block
+		if bKey == key {
+			log.Printf("Key %s is a nested block", bKey)
+			return nil, nil // nil, nil indicates this key belongs to a block not an attribute
 		}
-		a, _ := getAttributeForCtyKey(key, v.Block)
+		a, e := r.getAttributeForCtyKey(bKey, &bVal.Block)
 		if a != nil {
-			return a, nil
+			return a, nil // We found an attribute
+		}
+		if a == nil && e == nil {
+			return nil, nil // We found a block
 		}
 	}
 
-	return nil, fmt.Errorf("Unable to find attribute with the key %s", key)
+	return nil, fmt.Errorf("Unable to find attribute or block with the key %s", key)
 }
 
-func getValueFromCtyValue(key string, value *cty.Value) (interface{}, error) {
+func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
 	if value.IsNull() {
-		log.Printf("value for key %s is null\n", key)
+		log.Printf("key %s has null value\n", key)
 		return nil, nil
+	}
+
+	// Get the attribute for this cty key
+	attr, err := r.getAttributeForCtyKey(key, block)
+	if err != nil {
+		log.Printf("Key not found in schema %s, skipping\n", key)
+		return nil, nil
+	}
+	var sensitive bool
+	// Blocks are not attributes in the schema but still represent a value
+	isBlock := (attr == nil)
+	if isBlock {
+		sensitive = false // Blocks can't be sensitive
+	} else {
+		sensitive = attr.Sensitive
 	}
 
 	ctyType := value.Type()
 	if ctyType.Equals(cty.String) {
-		return value.AsString(), nil
+		s := value.AsString()
+		if sensitive {
+			if r.cipher != nil {
+				log.Printf("Key %s is sensitive, encrypting value", key)
+				s, err = r.cipher.Encrypt(s)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		return s, nil
 	} else if ctyType.Equals(cty.Bool) {
 		return value.True(), nil
 	} else if ctyType.Equals(cty.Number) {
 		return value.AsBigFloat().Float64, nil
-	} else if ctyType.IsMapType() {
+	} else if ctyType.IsMapType() || ctyType.IsObjectType() {
 		valueMap := value.AsValueMap()
 		nestedMap := make(map[string]interface{})
 		for k, v := range valueMap {
-			nestedValue, err := getValueFromCtyValue(k, &v)
+			nestedValue, err := r.getValueFromCtyValue(k, &v, block)
 			if err != nil {
 				return nil, err
 			}
@@ -602,7 +612,7 @@ func getValueFromCtyValue(key string, value *cty.Value) (interface{}, error) {
 		valueList := value.AsValueSlice()
 		list := make([]interface{}, len(valueList))
 		for _, item := range valueList {
-			value, err := getValueFromCtyValue(key, &item)
+			value, err := r.getValueFromCtyValue(key, &item, block)
 			if err != nil {
 				return nil, err
 			}
@@ -613,7 +623,7 @@ func getValueFromCtyValue(key string, value *cty.Value) (interface{}, error) {
 		valueSet := value.AsValueSet().Values()
 		list := make([]interface{}, len(valueSet))
 		for _, item := range valueSet {
-			value, err := getValueFromCtyValue(key, &item)
+			value, err := r.getValueFromCtyValue(key, &item, block)
 			if err != nil {
 				return nil, err
 			}
@@ -622,7 +632,7 @@ func getValueFromCtyValue(key string, value *cty.Value) (interface{}, error) {
 		return list, nil
 	}
 
-	return nil, fmt.Errorf("[Error] Unknown type on attribute. Skipping %v", key)
+	return nil, fmt.Errorf("Value type is unknown %+v. Skipping %v", ctyType.GoString(), key)
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
