@@ -2,7 +2,9 @@ package main_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"os"
 	"time"
@@ -119,48 +121,47 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 			Expect(err).To(BeNil())
 		}, 30)
 		It("should create the storage account and assign the status", func() {
-			By("returning the storage account ID")
-			Eventually(func() string {
+			By("returning the storage account properties in the status")
+			Eventually(func() bool {
 				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
 				Expect(err).To(BeNil())
 
 				status, ok := obj.Object["status"].(map[string]interface{})
 				Expect(err).To(BeNil())
 				if !ok {
-					return ""
+					return false
 				}
 
 				id := status["id"].(string)
-				return id
-			}, time.Minute*3, time.Second*5).Should(Not(BeEmpty())) // TODO check id format
-			By("returning the storage account name")
-			Eventually(func() string {
-				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
-				Expect(err).To(BeNil())
-
-				status, ok := obj.Object["status"].(map[string]interface{})
-				Expect(err).To(BeNil())
-				if !ok {
-					return ""
-				}
-
+				Expect(id).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
 				name := status["name"].(string)
-				return name
-			}, time.Minute*3, time.Second*5).Should(Not(BeEmpty()))
-			By("returning the storage account primary_access_key")
-			Eventually(func() string {
+				Expect(name).Should(Not(BeEmpty()))
+				primaryAccessKey := status["primary_access_key"].(string)
+				Expect(primaryAccessKey).Should(Not(BeEmpty()))
+				return true
+			}, time.Minute*3, time.Second*5).Should(BeTrue())
+		}, 300)
+		It("should create the storage account and assign the status with sensitive values", func() {
+			By("returning the storage account primary_access_key encrypted")
+			Eventually(func() error {
+				if encryptionKey, exists := os.LookupEnv("TF_STATE_ENCRYPTION_KEY"); !exists || encryptionKey == "" {
+					Skip("TF_STATE_ENCRYPTION_KEY not set!")
+				}
+
 				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
 				Expect(err).To(BeNil())
 
 				status, ok := obj.Object["status"].(map[string]interface{})
 				Expect(err).To(BeNil())
 				if !ok {
-					return ""
+					return fmt.Errorf("status not found in object map")
 				}
 
+				// If encoded, assume encrypted
 				primaryAccessKey := status["primary_access_key"].(string)
-				return primaryAccessKey
-			}, time.Minute*3, time.Second*5).Should(Not(BeEmpty()))
+				_, err = base64.StdEncoding.DecodeString(primaryAccessKey)
+				return err
+			}, time.Minute*3, time.Second*5).Should(BeNil())
 		}, 300)
 	})
 	Context("When deleting the storage account", func() {
