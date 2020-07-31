@@ -100,9 +100,14 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		}
 
 		// Create a TF cty.Value from the Spec JSON
-		configValue = r.createEmptyResourceValue(schema, "test1")
+		configValue = r.createEmptyResourceValue(*schema.Block, "test1")
 		var statusMessage string
-		configValue, statusMessage, err = r.applySpecValuesToTerraformConfig(ctx, schema, configValue, string(jsonSpecRaw))
+		// Unmarshal CRD spec JSON string to a value map
+		var crdValues map[string]interface{}
+		if err := json.Unmarshal([]byte(string(jsonSpecRaw)), &crdValues); err != nil {
+			return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
+		}
+		configValue, statusMessage, err = r.applySpecValuesToTerraformConfig(ctx, schema.Block, configValue, crdValues)
 		if err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err))
 		}
@@ -294,33 +299,33 @@ func (r *TerraformReconciler) setProvisioningState(resource *unstructured.Unstru
 	}
 	return nil
 }
-func (r *TerraformReconciler) createEmptyResourceValue(schema providers.Schema, resourceName string) *cty.Value {
-	emptyValue := schema.Block.EmptyValue()
+func (r *TerraformReconciler) createEmptyResourceValue(block configschema.Block, resourceName string) *cty.Value {
+	emptyValue := block.EmptyValue()
 	valueMap := emptyValue.AsValueMap()
 	valueMap["display_name"] = cty.StringVal(resourceName)
 	value := cty.ObjectVal(valueMap)
 	return &value
 }
 
-// applySpecValuesToTerraformConfig
+// applySpecValuesToTerraformConfig takes a terraform schema block, a cty object and a CRD
+// value map and updates the cty object with the values from the CRD value map.
 // returns
 //  cty.Value - the applied value or nil if not successful
 //  string    - a status message if we failed to apply without an error condition
 //  error     - non-nil if an error occurred
-func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Context, schema providers.Schema, originalValue *cty.Value, jsonString string) (*cty.Value, string, error) {
-	valueMap := originalValue.AsValueMap()
+func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Context, block *configschema.Block, config *cty.Value, crdValues map[string]interface{}) (*cty.Value, string, error) {
+	valueMap := config.AsValueMap()
 
-	mappedNames := map[string]bool{}
-	var jsonData map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonString), &jsonData); err != nil {
-		return nil, "", fmt.Errorf("Error unmarshalling JSON data: %s", err)
-	}
+	log.Printf("VALUES: %+v", crdValues)
 
-	for name, attribute := range schema.Block.Attributes {
-		jsonVal, gotJsonVal := jsonData[name]
-		if gotJsonVal {
-			getTerraformValueResult := r.getTerraformValueFromInterface(ctx, attribute.Type, jsonVal)
-			propName := name
+	// For each attribute in this schema block
+	for attrName, attr := range block.Attributes {
+		// Get the matching attribute name from the CRD map
+		crdValue, foundAttributeInCRD := crdValues[attrName]
+		if foundAttributeInCRD {
+			// If found, get the cty value from the CRD value
+			getTerraformValueResult := r.getTerraformValueFromInterface(ctx, attr.Type, crdValue)
+			propName := attrName
 			if getTerraformValueResult.Property != "" {
 				propName = propName + "." + getTerraformValueResult.Property
 			}
@@ -330,21 +335,29 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Conte
 			if getTerraformValueResult.Value == nil {
 				return nil, fmt.Sprintf("Unabile to retrieve value for %q: %s", propName, getTerraformValueResult.StatusMessage), nil
 			}
-			valueMap[name] = *getTerraformValueResult.Value
-			mappedNames[name] = true
-		}
-	}
-	unmappedNames := []string{}
-	for jsonName := range jsonData {
-		if !mappedNames[jsonName] {
-			unmappedNames = append(unmappedNames, jsonName)
+			valueMap[attrName] = *getTerraformValueResult.Value
 		}
 	}
 
-	// TODO handle schema.Block.BlockTypes as well as schema.Block.Attributes
-
-	if len(unmappedNames) > 0 {
-		return nil, "", fmt.Errorf("Unmapped values in JSON: %s", strings.Join(unmappedNames, ","))
+	// For each nested block
+	for nestedBlockName, nestedBlock := range block.BlockTypes {
+		log.Printf("nestedBlock %s is %+v", nestedBlockName, nestedBlock)
+		nestedCRDBlocks, foundNestedBlockInCRD := crdValues[nestedBlockName]
+		if foundNestedBlockInCRD {
+			nestedCRDBlockList := nestedCRDBlocks.([]interface{})
+			for _, nestedCRDBlock := range nestedCRDBlockList {
+				nestedCRDValues := nestedCRDBlock.(map[string]interface{})
+				nestedValue := r.createEmptyResourceValue(nestedBlock.Block, "test1")
+				updatedValue, statusMessage, err := r.applySpecValuesToTerraformConfig(ctx, &nestedBlock.Block, nestedValue, nestedCRDValues)
+				if err != nil {
+					return nil, "", err
+				}
+				if statusMessage != "" {
+					return nil, statusMessage, nil
+				}
+				valueMap[nestedBlockName] = *updatedValue
+			}
+		}
 	}
 
 	newValue := cty.ObjectVal(valueMap)

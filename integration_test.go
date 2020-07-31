@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"time"
@@ -114,6 +115,20 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 						"location":                 "westeurope",
 						"account_tier":             "Standard",
 						"account_replication_type": "LRS",
+						"network_rules": []interface{}{
+							map[string]interface{}{
+								"default_action": "Deny",
+								"ip_rules": []string{
+									"100.0.0.1",
+								},
+							},
+							map[string]interface{}{
+								"default_action": "Allow",
+								"ip_rules": []string{
+									"100.0.0.2",
+								},
+							},
+						},
 					},
 				},
 			}
@@ -131,6 +146,7 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 				if !ok {
 					return false
 				}
+				log.Printf("STATUS: %+v", status)
 
 				id := status["id"].(string)
 				Expect(id).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
@@ -139,11 +155,13 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 				primaryAccessKey := status["primary_access_key"].(string)
 				Expect(primaryAccessKey).Should(Not(BeEmpty()))
 				networkRules := status["network_rules"].([]interface{})
-				if len(networkRules) != 1 {
+				if len(networkRules) != 2 {
 					return false
 				}
-				networkRule := networkRules[0].(map[string]interface{})
-				Expect(networkRule["bypass"]).To(Not(BeNil()))
+				networkRule1 := networkRules[0].(map[string]interface{})
+				Expect(networkRule1["default_action"]).To(Equal("Deny"))
+				networkRule2 := networkRules[0].(map[string]interface{})
+				Expect(networkRule2["default_action"]).To(Equal("Allow"))
 				return true
 			}, time.Minute*3, time.Second*5).Should(BeTrue())
 		}, 300)
