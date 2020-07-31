@@ -355,6 +355,10 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Conte
 				if statusMessage != "" {
 					return nil, statusMessage, nil
 				}
+				if updatedValue == nil {
+					log.Printf("Skipping nil value in nested CRD block %+v", nestedCRDBlockList)
+					continue
+				}
 				valueMap[nestedBlockName] = *updatedValue
 			}
 		}
@@ -425,6 +429,41 @@ func (r *TerraformReconciler) getTerraformValueFromInterface(ctx context.Context
 		}
 		val := cty.MapVal(resultMap)
 		return GetTerraformValueResult{Value: &val}
+	} else if t.IsListType() || t.IsSetType() {
+		var elementType *cty.Type
+		if t.IsListType() {
+			elementType = t.ListElementType()
+		} else {
+			elementType = t.SetElementType()
+		}
+		lv, ok := value.([]interface{})
+		if !ok {
+			return GetTerraformValueResult{Error: fmt.Errorf("Invalid value '%q' - expected '[]interface{}'", value)}
+		}
+		resultList := []cty.Value{}
+		for _, v := range lv {
+			getTerraformValueResult := r.getTerraformValueFromInterface(ctx, *elementType, v)
+			var propName string
+			if getTerraformValueResult.Property != "" {
+				propName = getTerraformValueResult.Property
+			}
+			if getTerraformValueResult.Error != nil {
+				return GetTerraformValueResult{
+					Property: propName,
+					Error:    fmt.Errorf("Error getting list or set value for property %q: %v", propName, v),
+				}
+			}
+			if getTerraformValueResult.Value == nil {
+				return GetTerraformValueResult{
+					Property:      propName,
+					StatusMessage: getTerraformValueResult.StatusMessage,
+				}
+			}
+			resultList = append(resultList, *getTerraformValueResult.Value)
+		}
+		val := cty.ListVal(resultList)
+		return GetTerraformValueResult{Value: &val}
+
 	} else {
 		return GetTerraformValueResult{Error: fmt.Errorf("Unhandled type: %v", t.GoString())}
 	}
