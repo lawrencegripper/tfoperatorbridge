@@ -10,6 +10,7 @@ import (
 	"time"
 
 	openapi_spec "github.com/go-openapi/spec"
+	"github.com/hashicorp/terraform/configs/configschema"
 	terraform_schema "github.com/hashicorp/terraform/configs/configschema"
 	terraform_plugin "github.com/hashicorp/terraform/plugin"
 	"github.com/zclconf/go-cty/cty"
@@ -116,15 +117,21 @@ func addBlockToSchema(statusCRD, specCRD *openapi_spec.Schema, block *terraform_
 
 	// For the attributes in child blocks add sub schemas
 	for k, v := range block.BlockTypes {
+		var nesting string
+		if v.Nesting == configschema.NestingMap || v.Nesting == configschema.NestingGroup || v.Nesting == configschema.NestingSingle {
+			nesting = "object"
+		} else {
+			nesting = "array"
+		}
 		nestedSpecCRD := &openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type:     openapi_spec.StringOrArray{"object"},
+				Type:     openapi_spec.StringOrArray{nesting},
 				Required: []string{},
 			},
 		}
 		nestedStatusCRD := &openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type:     openapi_spec.StringOrArray{"object"},
+				Type:     openapi_spec.StringOrArray{nesting},
 				Required: []string{},
 			},
 		}
@@ -168,12 +175,21 @@ func getSchemaForType(name string, item *cty.Type) *openapi_spec.Schema {
 	} else if item.IsMapType() {
 		mapType := getSchemaForType(name+"mapType", item.MapElementType())
 		property = openapi_spec.MapProperty(mapType)
+		property.Items = &openapi_spec.SchemaOrArray{
+			Schema: mapType,
+		}
 	} else if item.IsListType() {
 		listType := getSchemaForType(name+"listType", item.ListElementType())
 		property = openapi_spec.ArrayProperty(listType)
+		property.Items = &openapi_spec.SchemaOrArray{
+			Schema: listType,
+		}
 	} else if item.IsSetType() {
 		setType := getSchemaForType(name+"setType", item.SetElementType())
 		property = openapi_spec.ArrayProperty(setType)
+		property.Items = &openapi_spec.SchemaOrArray{
+			Schema: setType,
+		}
 	} else {
 		log.Printf("[Error] Unknown type on attribute. Skipping %v", name)
 	}
