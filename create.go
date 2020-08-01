@@ -116,8 +116,18 @@ func addBlockToSchema(statusCRD, specCRD *openapi_spec.Schema, block *terraform_
 
 	// For the attributes in child blocks add sub schemas
 	for k, v := range block.BlockTypes {
-		nestedSpecCRD := &openapi_spec.Schema{}
-		nestedStatusCRD := &openapi_spec.Schema{}
+		nestedSpecCRD := &openapi_spec.Schema{
+			SchemaProps: openapi_spec.SchemaProps{
+				Type:     openapi_spec.StringOrArray{"object"},
+				Required: []string{},
+			},
+		}
+		nestedStatusCRD := &openapi_spec.Schema{
+			SchemaProps: openapi_spec.SchemaProps{
+				Type:     openapi_spec.StringOrArray{"object"},
+				Required: []string{},
+			},
+		}
 		addBlockToSchema(nestedSpecCRD, nestedStatusCRD, &v.Block)
 		if specCRD.Properties == nil {
 			specCRD.Properties = map[string]openapi_spec.Schema{}

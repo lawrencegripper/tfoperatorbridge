@@ -316,10 +316,12 @@ func (r *TerraformReconciler) createEmptyResourceValue(block configschema.Block,
 func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Context, block *configschema.Block, config *cty.Value, crdValues map[string]interface{}) (*cty.Value, string, error) {
 	valueMap := config.AsValueMap()
 
-	log.Printf("VALUES: %+v", crdValues)
-
 	// For each attribute in this schema block
 	for attrName, attr := range block.Attributes {
+		if attr.Computed {
+			continue // Skip computed attributes as they are only used for the status
+		}
+
 		// Get the matching attribute name from the CRD map
 		crdValue, foundAttributeInCRD := crdValues[attrName]
 		if foundAttributeInCRD {
@@ -335,13 +337,15 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Conte
 			if getTerraformValueResult.Value == nil {
 				return nil, fmt.Sprintf("Unabile to retrieve value for %q: %s", propName, getTerraformValueResult.StatusMessage), nil
 			}
+			if getTerraformValueResult.Value.IsNull() {
+				continue // Skip attributes in schema that have a null value in the CRD
+			}
 			valueMap[attrName] = *getTerraformValueResult.Value
 		}
 	}
 
 	// For each nested block
 	for nestedBlockName, nestedBlock := range block.BlockTypes {
-		log.Printf("nestedBlock %s is %+v", nestedBlockName, nestedBlock)
 		nestedCRDBlocks, foundNestedBlockInCRD := crdValues[nestedBlockName]
 		if foundNestedBlockInCRD {
 			nestedCRDBlockList := nestedCRDBlocks.([]interface{})
@@ -700,6 +704,7 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
+	log.Printf("resource: %s, config: %+v, state: %+v", resourceName, config, state)
 	planResponse := r.provider.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
 		PriorState:       *state, // State after last apply or empty if non-existent
