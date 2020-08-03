@@ -20,7 +20,10 @@ func main() {
 	}
 
 	// Example creating CRDs in K8s with correct structure based on TF Schemas
-	resources := createCRDsForResources(provider)
+	resources, err := createKubernetesCRDsFromTerraformProvider(provider)
+	if err != nil {
+		panic(err)
+	}
 
 	// Start an informer to watch for crd items
 	setupControllerRuntime(provider, resources)

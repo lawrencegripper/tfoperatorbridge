@@ -318,10 +318,6 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Conte
 
 	// For each attribute in this schema block
 	for attrName, attr := range block.Attributes {
-		if attr.Computed {
-			continue // Skip computed attributes as they are only used for the status
-		}
-
 		// Get the matching attribute name from the CRD map
 		crdValue, foundAttributeInCRD := crdValues[attrName]
 		if foundAttributeInCRD {
@@ -338,8 +334,17 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Conte
 				return nil, fmt.Sprintf("Unabile to retrieve value for %q: %s", propName, getTerraformValueResult.StatusMessage), nil
 			}
 			if getTerraformValueResult.Value.IsNull() {
+				log.Printf("Skipping attribute %s as has a null value in CRD", attrName)
 				continue // Skip attributes in schema that have a null value in the CRD
 			}
+			valType := getTerraformValueResult.Value.Type()
+			if valType.IsCollectionType() {
+				if getTerraformValueResult.Value.LengthInt() == 0 {
+					log.Printf("Skipping collection attribute %s as it is empty in CRD", attrName)
+					continue // Skip attributes in schema that have an empty value in the CRD
+				}
+			}
+			log.Printf("Adding terraform attribute %s with value %+v", attrName, getTerraformValueResult.Value) // TODO: uncomment when debug logging supported
 			valueMap[attrName] = *getTerraformValueResult.Value
 		}
 	}
@@ -359,15 +364,22 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Conte
 				if statusMessage != "" {
 					return nil, statusMessage, nil
 				}
-				if updatedValue == nil {
-					log.Printf("Skipping nil value in nested CRD block %+v", nestedCRDBlockList)
+				if updatedValue == nil || updatedValue.IsNull() {
+					log.Printf("Skipping nil value in nested CRD block %+v", nestedCRDBlock)
 					continue
 				}
+				if updatedValue.Type().IsCollectionType() {
+					if updatedValue.LengthInt() == 0 {
+						log.Printf("Skipping empty collection in nested CRD block %+v", nestedCRDBlock)
+					}
+				}
+				log.Printf("Adding terraform block %s with value %+v", nestedBlockName, updatedValue) // TODO: uncomment when debug logging supported
 				valueMap[nestedBlockName] = *updatedValue
 			}
 		}
 	}
 
+	log.Printf("CONFIG: %+v", valueMap)
 	newValue := cty.ObjectVal(valueMap)
 	return &newValue, "", nil
 }
@@ -467,7 +479,6 @@ func (r *TerraformReconciler) getTerraformValueFromInterface(ctx context.Context
 		}
 		val := cty.ListVal(resultList)
 		return GetTerraformValueResult{Value: &val}
-
 	} else {
 		return GetTerraformValueResult{Error: fmt.Errorf("Unhandled type: %v", t.GoString())}
 	}
@@ -567,7 +578,7 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 	}
 
 	for k, v := range valueMap {
-		value, err := r.getValueFromCtyValue(k, &v, schema.Block)
+		value, err := r.getValueFromTerraformValue(k, &v, schema.Block)
 		if err != nil {
 			return err
 		}
@@ -582,7 +593,7 @@ func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Sc
 	return nil
 }
 
-func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configschema.Block) (*configschema.Attribute, error) {
+func (r *TerraformReconciler) getAttributeFromTerraformBlock(key string, block *configschema.Block) (*configschema.Attribute, error) {
 	if block == nil {
 		return nil, fmt.Errorf("Cannot find attribute in nil block")
 	}
@@ -602,7 +613,7 @@ func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configsch
 			// log.Printf("Key %s is a nested block", bKey) // TODO: uncomment when debug logging supported
 			return nil, nil // nil, nil indicates this key belongs to a block not an attribute
 		}
-		a, e := r.getAttributeForCtyKey(bKey, &bVal.Block)
+		a, e := r.getAttributeFromTerraformBlock(bKey, &bVal.Block)
 		if a != nil {
 			return a, nil // We found an attribute
 		}
@@ -616,14 +627,14 @@ func (r *TerraformReconciler) getAttributeForCtyKey(key string, block *configsch
 }
 
 // TODO: Write tests to validate behaviour
-func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
+func (r *TerraformReconciler) getValueFromTerraformValue(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
 	if value.IsNull() {
 		// log.Printf("key %s has null value\n", key) // TODO: uncomment when debug logging supported
 		return nil, nil
 	}
 
 	// Get the attribute for this cty key
-	attr, err := r.getAttributeForCtyKey(key, block)
+	attr, err := r.getAttributeFromTerraformBlock(key, block)
 	if err != nil {
 		log.Printf("Key not found in schema. Skipping %s\n", key)
 		return nil, nil
@@ -663,7 +674,7 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 		valueMap := value.AsValueMap()
 		nestedMap := make(map[string]interface{})
 		for k, v := range valueMap {
-			nestedValue, err := r.getValueFromCtyValue(k, &v, nextBlock)
+			nestedValue, err := r.getValueFromTerraformValue(k, &v, nextBlock)
 			if err != nil {
 				return nil, err
 			}
@@ -674,7 +685,7 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 		valueList := value.AsValueSlice()
 		list := make([]interface{}, len(valueList))
 		for _, item := range valueList {
-			value, err := r.getValueFromCtyValue(key, &item, block)
+			value, err := r.getValueFromTerraformValue(key, &item, block)
 			if err != nil {
 				return nil, err
 			}
@@ -688,7 +699,7 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 		valueSet := value.AsValueSet().Values()
 		list := make([]interface{}, len(valueSet))
 		for _, item := range valueSet {
-			value, err := r.getValueFromCtyValue(key, &item, nextBlock)
+			value, err := r.getValueFromTerraformValue(key, &item, nextBlock)
 			if err != nil {
 				return nil, err
 			}
@@ -704,7 +715,7 @@ func (r *TerraformReconciler) getValueFromCtyValue(key string, value *cty.Value,
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
-	log.Printf("resource: %s, config: %+v, state: %+v", resourceName, config, state)
+	log.Printf("PLAN: %+v", config)
 	planResponse := r.provider.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
 		PriorState:       *state, // State after last apply or empty if non-existent

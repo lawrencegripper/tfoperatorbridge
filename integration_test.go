@@ -115,14 +115,14 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 						"location":                 "westeurope",
 						"account_tier":             "Standard",
 						"account_replication_type": "LRS",
-						"network_rules": []interface{}{
-							map[string]interface{}{
+						"network_rules": []map[string]interface{}{
+							{
 								"default_action": "Deny",
 								"ip_rules": []string{
 									"100.0.0.1",
 								},
 							},
-							map[string]interface{}{
+							{
 								"default_action": "Allow",
 								"ip_rules": []string{
 									"100.0.0.2",
