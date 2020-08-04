@@ -20,7 +20,6 @@ func TestTfOperatorBridge(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-
 	var kubeconfig string
 	if home := os.Getenv("HOME"); home != "" {
 		kubeconfig = filepath.Join(home, ".kube", "config")

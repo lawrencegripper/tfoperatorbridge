@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -17,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 )
 
 func RandomString(n int) string {
@@ -31,10 +31,75 @@ func RandomString(n int) string {
 	return string(s)
 }
 
-var _ = Describe("When creating CRDs sequentially after resources are created", func() {
+func EncryptionKeyIsSet() bool {
+	if encryptionKey, exists := os.LookupEnv("TF_STATE_ENCRYPTION_KEY"); !exists || encryptionKey == "" {
+		return false
+	}
+	return true
+}
+
+func GetAzureResourceGroup(name, location string) unstructured.Unstructured {
+	return unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "azurerm.tfb.local/valpha1",
+			"kind":       "resource-group",
+			"metadata": map[string]interface{}{
+				"name": name,
+			},
+			"spec": map[string]interface{}{
+				"name":     name,
+				"location": location,
+			},
+		},
+	}
+}
+
+func GetAzureStorageAccount(resourceGroup, name, location string) unstructured.Unstructured {
+	return unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "azurerm.tfb.local/valpha1",
+			"kind":       "storage-account",
+			"metadata": map[string]interface{}{
+				"name": name,
+			},
+			"spec": map[string]interface{}{
+				"name":                     name,
+				"resource_group_name":      resourceGroup,
+				"location":                 location,
+				"account_tier":             "Standard",
+				"account_replication_type": "LRS",
+				"network_rules": []map[string]interface{}{
+					{
+						"default_action": "Deny",
+						"ip_rules": []string{
+							"100.0.0.1",
+						},
+					},
+					{
+						"default_action": "Allow",
+						"ip_rules": []string{
+							"100.0.0.2",
+						},
+					},
+				},
+				"tags": map[string]string{
+					"environment": "Production",
+				},
+			},
+		},
+	}
+}
+
+func k8sClientWithDefaults(res schema.GroupVersionResource) dynamic.ResourceInterface {
+	return k8sClient.Resource(res).Namespace("default")
+}
+
+var _ = Describe("Azure resource creation in order", func() {
 	randomString := RandomString(12)
 	resourceGroupName := "tftest-" + randomString
+	resourceGroupLocation := "westeurope"
 	storageAccountName := randomString
+	storageAccountLocation := "westeurope"
 
 	gvrResourceGroup := schema.GroupVersionResource{
 		Group:    "azurerm.tfb.local",
@@ -48,154 +113,121 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 		Resource: "storage-accounts",
 	}
 
-	Context("When creating the resource group", func() {
-		It("should allow the resource-group CRD to be created", func() {
-
-			Expect(k8sClient).ToNot(BeNil())
-
-			objResourceGroup := unstructured.Unstructured{
-				Object: map[string]interface{}{
-					"apiVersion": "azurerm.tfb.local/valpha1",
-					"kind":       "resource-group",
-					"metadata": map[string]interface{}{
-						"name": resourceGroupName,
-					},
-					"spec": map[string]interface{}{
-						"name":     resourceGroupName,
-						"location": "westeurope",
-					},
-				},
-			}
-			_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Create(context.TODO(), &objResourceGroup, metav1.CreateOptions{})
+	When("creating an azure resource group CRD", func() {
+		azureResourecGroupCRDRequest := GetAzureResourceGroup(resourceGroupName, resourceGroupLocation)
+		var azureResourceGroupCRDResponse *unstructured.Unstructured
+		var resourceGroupId string
+		It("should create without error", func() {
+			_, err := k8sClientWithDefaults(gvrResourceGroup).Create(context.TODO(), &azureResourecGroupCRDRequest, metav1.CreateOptions{})
 			Expect(err).To(BeNil())
 		}, 30)
-		It("should create the resource group and assign the status.id", func() {
-			Eventually(func() string {
-				obj, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
+		It("should have a status.id property set", func() {
+			Eventually(func() bool {
+				var err error
+				azureResourceGroupCRDResponse, err = k8sClientWithDefaults(gvrResourceGroup).Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
 				Expect(err).To(BeNil())
-
-				status, ok := obj.Object["status"].(map[string]interface{})
-				Expect(err).To(BeNil())
-				if !ok {
-					return ""
-				}
-
-				id := status["id"].(string)
-				return id
-			}, time.Second*30, time.Second*5).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
+				status, _ := azureResourceGroupCRDResponse.Object["status"].(map[string]interface{})
+				var ok bool
+				resourceGroupId, ok = status["id"].(string)
+				return ok
+			}, time.Second*45, time.Second*5).Should(BeTrue(), "CRD should have status.id property")
 		}, 30)
-		It("if encryption key set should have an encrypted terraform state", func() {
-			if encryptionKey, exists := os.LookupEnv("TF_STATE_ENCRYPTION_KEY"); !exists || encryptionKey == "" {
-				Skip("TF_STATE_ENCRYPTION_KEY not set!")
+		It("should have a status.id property set to a valid azure resource id", func() {
+			Expect(resourceGroupId).To(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
+		}, 30)
+		It("should store terraform state encrypted in status._tfoperator.tfState", func() {
+			if EncryptionKeyIsSet() {
+				Skip("encryption key is not set, skipping test")
 			}
-			obj, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
+			tfStateString, gotTfState, err := unstructured.NestedString(azureResourceGroupCRDResponse.Object, "status", "_tfoperator", "tfState")
 			Expect(err).To(BeNil())
-
-			tfStateString, gotTfState, err := unstructured.NestedString(obj.Object, "status", "_tfoperator", "tfState")
-			Expect(err).To(BeNil())
-			Expect(gotTfState).To(BeTrue(), "Terraform should have status._tfoperator.tfState property")
+			Expect(gotTfState).To(BeTrue(), "CRD should have status._tfoperator.tfState property")
 
 			var js string
 			err = json.Unmarshal([]byte(tfStateString), &js)
-			Expect(err).ToNot(BeNil())
+			Expect(err).ToNot(BeNil()) // Check state is encrypted as it's not valid JSON
 		}, 30)
 	})
-	Context("When creating the storage account", func() {
-		It("should allow the storage-account CRD to be created", func() {
-			objStorageAccount := unstructured.Unstructured{
-				Object: map[string]interface{}{
-					"apiVersion": "azurerm.tfb.local/valpha1",
-					"kind":       "storage-account",
-					"metadata": map[string]interface{}{
-						"name": storageAccountName,
-					},
-					"spec": map[string]interface{}{
-						"name":                     storageAccountName,
-						"resource_group_name":      resourceGroupName,
-						"location":                 "westeurope",
-						"account_tier":             "Standard",
-						"account_replication_type": "LRS",
-						"network_rules": []map[string]interface{}{
-							{
-								"default_action": "Deny",
-								"ip_rules": []string{
-									"100.0.0.1",
-								},
-							},
-							{
-								"default_action": "Allow",
-								"ip_rules": []string{
-									"100.0.0.2",
-								},
-							},
-						},
-					},
-				},
-			}
-			_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Create(context.TODO(), &objStorageAccount, metav1.CreateOptions{})
+	When("creating the azure storage account CRD", func() {
+		azureStorageAccountCRDRequest := GetAzureStorageAccount(resourceGroupName, storageAccountName, storageAccountLocation)
+		var azureStorageAccountCRDResponse *unstructured.Unstructured
+		var status map[string]interface{}
+		var storageAccountId string
+		It("should create without error", func() {
+			_, err := k8sClientWithDefaults(gvrStorageAccount).Create(context.TODO(), &azureStorageAccountCRDRequest, metav1.CreateOptions{})
 			Expect(err).To(BeNil())
 		}, 30)
-		It("should create the storage account and assign the status", func() {
-			By("returning the storage account properties in the status")
+		It("should have the status.id property set", func() {
 			Eventually(func() bool {
-				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+				var err error
+				azureStorageAccountCRDResponse, err = k8sClientWithDefaults(gvrStorageAccount).Get(context.TODO(), storageAccountName, metav1.GetOptions{})
 				Expect(err).To(BeNil())
+				status, _ = azureStorageAccountCRDResponse.Object["status"].(map[string]interface{})
+				var ok bool
+				storageAccountId, ok = status["id"].(string)
+				return ok
+			}, time.Second*45, time.Second*5).Should(BeTrue())
+		}, 30)
+		It("should have the status.id property set to a valid azure resource id", func() {
+			Expect(storageAccountId).To(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName + "/providers/Microsoft.Storage/storageAccounts/" + storageAccountName))
+		}, 30)
+		It("should have the status.name property set to a non empty string", func() {
+			var ok bool
+			name, ok := status["name"].(string)
+			Expect(ok).To(BeTrue(), "CRD should have a status.name property")
+			Expect(name).ToNot(BeEmpty(), "status.name should not be an empty string")
+		}, 30)
+		It("should have the status.primary_access_key property set to a non empty string", func() {
+			var ok bool
+			primaryAccessKey, ok := status["primary_access_key"].(string)
+			Expect(ok).To(BeTrue(), "CRD should have a status.primary_access_key property")
+			Expect(primaryAccessKey).ToNot(BeEmpty(), "status.primary_access_key should not be an empty string")
+		}, 30)
+		It("should have the status.tags property as an object", func() {
+			var ok bool
+			tags, ok := status["tags"].(interface{})
+			Expect(ok).To(BeTrue(), "CRD should have a status.tags property")
+			tagMap, ok := tags.(map[string]interface{})
+			Expect(ok).To(BeTrue(), "status.tags property should be a map[string]string")
+			log.Printf("TAGS: %+v", tagMap)
+			val, ok := tagMap["environment"]
+			Expect(ok).To(BeTrue(), "status.tags property map should have key environment")
+			environment, ok := val.(string)
+			Expect(ok).To(BeTrue(), "status.tags property map key environment should have a string value")
+			Expect(environment).To(Equal("Production"))
+		}, 30)
+		It("should have the status.network_rules property as an array", func() {
+			var ok bool
+			networkRules, ok := status["network_rules"].([]interface{})
+			Expect(ok).To(BeTrue(), "CRD should have a status.network_rules property")
+			Expect(len(networkRules)).To(Equal(2))
+			networkRule1 := networkRules[0].(map[string]interface{})
+			Expect(networkRule1["default_action"]).To(Equal("Deny"))
+			networkRule2 := networkRules[1].(map[string]interface{})
+			Expect(networkRule2["default_action"]).To(Equal("Allow"))
+		}, 30)
+		It("should encrypt sensitive values stored in the status property", func() {
+			if EncryptionKeyIsSet() {
+				Skip("encryption key is not set, skipping test")
+			}
 
-				status, ok := obj.Object["status"].(map[string]interface{})
-				Expect(err).To(BeNil())
-				if !ok {
-					return false
-				}
-				log.Printf("STATUS: %+v", status)
-
-				id := status["id"].(string)
-				Expect(id).Should(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
-				name := status["name"].(string)
-				Expect(name).Should(Not(BeEmpty()))
-				primaryAccessKey := status["primary_access_key"].(string)
-				Expect(primaryAccessKey).Should(Not(BeEmpty()))
-				networkRules := status["network_rules"].([]interface{})
-				if len(networkRules) != 2 {
-					return false
-				}
-				networkRule1 := networkRules[0].(map[string]interface{})
-				Expect(networkRule1["default_action"]).To(Equal("Deny"))
-				networkRule2 := networkRules[0].(map[string]interface{})
-				Expect(networkRule2["default_action"]).To(Equal("Allow"))
-				return true
-			}, time.Minute*3, time.Second*5).Should(BeTrue())
-		}, 300)
-		It("should create the storage account and assign the status with sensitive values", func() {
-			By("returning the storage account primary_access_key encrypted")
-			Eventually(func() error {
-				if encryptionKey, exists := os.LookupEnv("TF_STATE_ENCRYPTION_KEY"); !exists || encryptionKey == "" {
-					Skip("TF_STATE_ENCRYPTION_KEY not set!")
-				}
-
-				obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
-				Expect(err).To(BeNil())
-
-				status, ok := obj.Object["status"].(map[string]interface{})
-				Expect(err).To(BeNil())
-				if !ok {
-					return fmt.Errorf("status not found in object map")
-				}
-
-				// If encoded, assume encrypted
-				primaryAccessKey := status["primary_access_key"].(string)
-				_, err = base64.StdEncoding.DecodeString(primaryAccessKey)
-				return err
-			}, time.Minute*3, time.Second*5).Should(BeNil())
-		}, 300)
+			// If base64 encoded, assume we have encrypted the value as well
+			var ok bool
+			primaryAccessKey, ok := status["primary_access_key"].(string)
+			Expect(ok).To(BeTrue(), "CRD should have a primary_access_key property")
+			var err error
+			_, err = base64.StdEncoding.DecodeString(primaryAccessKey)
+			Expect(err).To(BeNil(), "status.primary_access_key should be base64 encoded and encrypted")
+		}, 30)
 	})
-	Context("When deleting the storage account", func() {
+	When("deleting the azure storage account", func() {
 		It("should allow the CRD delete request", func() {
-			err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Delete(context.TODO(), storageAccountName, metav1.DeleteOptions{})
+			err := k8sClientWithDefaults(gvrStorageAccount).Delete(context.TODO(), storageAccountName, metav1.DeleteOptions{})
 			Expect(err).To(BeNil())
 		})
-		It("should delete CRD", func() {
+		It("should delete the CRD", func() {
 			Eventually(func() bool {
-				_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+				_, err := k8sClientWithDefaults(gvrStorageAccount).Get(context.TODO(), storageAccountName, metav1.GetOptions{})
 				if err != nil {
 					if errors.IsNotFound(err) {
 						return true
@@ -206,14 +238,14 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 			}, time.Minute*5, time.Second*10).Should(BeTrue())
 		}, 300)
 	})
-	Context("When deleting the storage account", func() {
+	When("deleting the azure resource group", func() {
 		It("should allow the CRD delete request", func() {
-			err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Delete(context.TODO(), resourceGroupName, metav1.DeleteOptions{})
+			err := k8sClientWithDefaults(gvrResourceGroup).Delete(context.TODO(), resourceGroupName, metav1.DeleteOptions{})
 			Expect(err).To(BeNil())
 		})
-		It("should delete CRD", func() {
+		It("should delete the CRD", func() {
 			Eventually(func() bool {
-				_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
+				_, err := k8sClientWithDefaults(gvrResourceGroup).Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
 				if err != nil {
 					if errors.IsNotFound(err) {
 						return true
@@ -226,7 +258,7 @@ var _ = Describe("When creating CRDs sequentially after resources are created", 
 	})
 })
 
-var _ = Describe("When creating CRDs out of order with references", func() {
+var _ = Describe("Azure resource creation out of order", func() {
 	// This test creates the storage account CRD first but the referenced resource group doesn't exist
 	// It checks that it retries and succeeds once the resource group is created
 
@@ -264,7 +296,7 @@ var _ = Describe("When creating CRDs out of order with references", func() {
 					},
 				},
 			}
-			_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Create(context.TODO(), &objStorageAccount, metav1.CreateOptions{})
+			_, err := k8sClientWithDefaults(gvrStorageAccount).Create(context.TODO(), &objStorageAccount, metav1.CreateOptions{})
 			Expect(err).To(BeNil())
 
 			// TODO - when we add events, wait for an event indicating retrying due to referenced resources
@@ -288,14 +320,14 @@ var _ = Describe("When creating CRDs out of order with references", func() {
 					},
 				},
 			}
-			_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Create(context.TODO(), &objResourceGroup, metav1.CreateOptions{})
+			_, err := k8sClientWithDefaults(gvrResourceGroup).Create(context.TODO(), &objResourceGroup, metav1.CreateOptions{})
 			Expect(err).To(BeNil())
 		}, 30)
 	})
 	It("should retry and create the storage account and assign the status.id", func() {
 		By("returning the storage account ID")
 		Eventually(func() string {
-			obj, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+			obj, err := k8sClientWithDefaults(gvrStorageAccount).Get(context.TODO(), storageAccountName, metav1.GetOptions{})
 			Expect(err).To(BeNil())
 
 			status, ok := obj.Object["status"].(map[string]interface{})
@@ -310,12 +342,12 @@ var _ = Describe("When creating CRDs out of order with references", func() {
 	}, 300)
 	Context("When deleting the storage account", func() {
 		It("should allow the CRD delete request", func() {
-			err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Delete(context.TODO(), storageAccountName, metav1.DeleteOptions{})
+			err := k8sClientWithDefaults(gvrStorageAccount).Delete(context.TODO(), storageAccountName, metav1.DeleteOptions{})
 			Expect(err).To(BeNil())
 		})
 		It("should delete CRD", func() {
 			Eventually(func() bool {
-				_, err := k8sClient.Resource(gvrStorageAccount).Namespace("default").Get(context.TODO(), storageAccountName, metav1.GetOptions{})
+				_, err := k8sClientWithDefaults(gvrStorageAccount).Get(context.TODO(), storageAccountName, metav1.GetOptions{})
 				if err != nil {
 					if errors.IsNotFound(err) {
 						return true
@@ -328,12 +360,12 @@ var _ = Describe("When creating CRDs out of order with references", func() {
 	})
 	Context("When deleting the storage account", func() {
 		It("should allow the CRD delete request", func() {
-			err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Delete(context.TODO(), resourceGroupName, metav1.DeleteOptions{})
+			err := k8sClientWithDefaults(gvrResourceGroup).Delete(context.TODO(), resourceGroupName, metav1.DeleteOptions{})
 			Expect(err).To(BeNil())
 		})
 		It("should delete CRD", func() {
 			Eventually(func() bool {
-				_, err := k8sClient.Resource(gvrResourceGroup).Namespace("default").Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
+				_, err := k8sClientWithDefaults(gvrResourceGroup).Get(context.TODO(), resourceGroupName, metav1.GetOptions{})
 				if err != nil {
 					if errors.IsNotFound(err) {
 						return true

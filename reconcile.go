@@ -75,12 +75,12 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
 	schema := r.provider.GetSchema().ResourceTypes[resourceName]
 
-	var configValue *cty.Value
+	var terraformConfig *cty.Value
 	var deleting bool
 	if deleting = r.isDeleting(crd); deleting {
 		// Deleting, so set a NullVal for the config
 		v := cty.NullVal(schema.Block.ImpliedType())
-		configValue = &v
+		terraformConfig = &v
 	} else {
 		if err := r.ensureFinalizer(ctx, log, crd); err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error adding finalizer: %s", err))
@@ -100,18 +100,18 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		}
 
 		// Create a TF cty.Value from the Spec JSON
-		configValue = r.createEmptyResourceValue(*schema.Block, "test1")
+		terraformConfig = r.createEmptyTerraformValueForBlock(schema.Block, "test1")
 		var statusMessage string
 		// Unmarshal CRD spec JSON string to a value map
-		var crdValues map[string]interface{}
-		if err := json.Unmarshal([]byte(string(jsonSpecRaw)), &crdValues); err != nil {
+		var crdSpecValues map[string]interface{}
+		if err := json.Unmarshal([]byte(string(jsonSpecRaw)), &crdSpecValues); err != nil {
 			return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
 		}
-		configValue, statusMessage, err = r.applySpecValuesToTerraformConfig(ctx, schema.Block, configValue, crdValues)
+		terraformConfig, statusMessage, err = r.mapCRDSpecValuesToTerraformConfig(ctx, schema.Block, terraformConfig, crdSpecValues)
 		if err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err))
 		}
-		if configValue == nil {
+		if terraformConfig == nil {
 			// unable to retrieve referenced values - retry later
 			log.Info(fmt.Sprintf("Reconcile - requeing. Unable to apply spec: %s", statusMessage))
 			return &ctrl.Result{RequeueAfter: time.Second * 30}, nil // TODO - configurable retry time?
@@ -123,7 +123,7 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		return reconcileLogError(log, fmt.Errorf("Error getting Terraform state from CRD: %s", err))
 	}
 	log.Info("Terraform plan and apply...")
-	newState, err := r.planAndApplyConfig(resourceName, *configValue, state)
+	newState, err := r.planAndApplyConfig(resourceName, *terraformConfig, state)
 	if err != nil {
 		return reconcileLogError(log, fmt.Errorf("Error applying changes in Terraform: %s", err))
 	}
@@ -149,7 +149,7 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 			return reconcileLogError(log, fmt.Errorf("Error saving provisioning state applied: %s", err))
 		}
 		// TODO: Rename to mapTerraformValueToCrdStatus
-		if err = r.applyTerraformValueToCrdStatus(schema, newState, crd); err != nil {
+		if err = r.mapTerraformValueToCRDStatus(schema, newState, crd); err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error mapping Terraform value to CRD status: %s", err))
 		}
 		if err = r.saveResourceStatus(ctx, crdPreStateChanges, crd); err != nil {
@@ -159,9 +159,11 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 	log.Info("Reconcile completed")
 	return &ctrl.Result{}, nil
 }
+
 func reconcileLogError(log logr.Logger, err error) (*ctrl.Result, error) {
 	return reconcileLogErrorWithResult(log, nil, err)
 }
+
 func reconcileLogErrorWithResult(log logr.Logger, result *ctrl.Result, err error) (*ctrl.Result, error) {
 	log.Error(err, "Reconcile failed")
 	return result, err
@@ -190,6 +192,7 @@ func (r *TerraformReconciler) ensureFinalizer(ctx context.Context, log logr.Logg
 	}
 	return nil
 }
+
 func (r *TerraformReconciler) removeFinalizerAndSave(ctx context.Context, log logr.Logger, resource *unstructured.Unstructured) error {
 	copyResource := resource.DeepCopy()
 
@@ -214,6 +217,7 @@ func (r *TerraformReconciler) removeFinalizerAndSave(ctx context.Context, log lo
 	}
 	return nil
 }
+
 func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unstructured, schema providers.Schema) (*cty.Value, error) {
 	tfStateString, gotTfState, err := unstructured.NestedString(resource.Object, "status", "_tfoperator", "tfState")
 	if err != nil {
@@ -244,6 +248,7 @@ func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unst
 	emptyValue := schema.Block.EmptyValue()
 	return &emptyValue, nil
 }
+
 func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resource *unstructured.Unstructured, state *cty.Value) error {
 	copyResource := resource.DeepCopy()
 
@@ -274,6 +279,7 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 	}
 	return nil
 }
+
 func (r *TerraformReconciler) setLastAppliedGeneration(resource *unstructured.Unstructured) error {
 	gen := resource.GetGeneration()
 	err := unstructured.SetNestedField(resource.Object, strconv.FormatInt(gen, 10), "status", "_tfoperator", "lastAppliedGeneration")
@@ -282,6 +288,7 @@ func (r *TerraformReconciler) setLastAppliedGeneration(resource *unstructured.Un
 	}
 	return nil
 }
+
 func (r *TerraformReconciler) getProvisioningState(resource *unstructured.Unstructured) (string, error) {
 	val, gotVal, err := unstructured.NestedString(resource.Object, "status", "_tfoperator", "provisioningState")
 	if err != nil {
@@ -292,6 +299,7 @@ func (r *TerraformReconciler) getProvisioningState(resource *unstructured.Unstru
 	}
 	return val, nil
 }
+
 func (r *TerraformReconciler) setProvisioningState(resource *unstructured.Unstructured, state string) error {
 	err := unstructured.SetNestedField(resource.Object, state, "status", "_tfoperator", "provisioningState")
 	if err != nil {
@@ -299,7 +307,8 @@ func (r *TerraformReconciler) setProvisioningState(resource *unstructured.Unstru
 	}
 	return nil
 }
-func (r *TerraformReconciler) createEmptyResourceValue(block configschema.Block, resourceName string) *cty.Value {
+
+func (r *TerraformReconciler) createEmptyTerraformValueForBlock(block *configschema.Block, resourceName string) *cty.Value {
 	emptyValue := block.EmptyValue()
 	valueMap := emptyValue.AsValueMap()
 	valueMap["display_name"] = cty.StringVal(resourceName)
@@ -307,19 +316,17 @@ func (r *TerraformReconciler) createEmptyResourceValue(block configschema.Block,
 	return &value
 }
 
-// applySpecValuesToTerraformConfig takes a terraform schema block, a cty object and a CRD
-// value map and updates the cty object with the values from the CRD value map.
-// returns
-//  cty.Value - the applied value or nil if not successful
-//  string    - a status message if we failed to apply without an error condition
-//  error     - non-nil if an error occurred
-func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Context, block *configschema.Block, config *cty.Value, crdValues map[string]interface{}) (*cty.Value, string, error) {
-	valueMap := config.AsValueMap()
-
+// mapCRDSpecValuesToTerraformConfig takes a maps values from a CRD spec to a terraform config value respecting the terraform block schema.
+// returns:
+// - cty.Value, updated terraform config value or nil if unsuccessful
+// - string, 	a status message if mapping failed without an error condition
+// - error, 	not nil if an error occured during mapping
+func (r *TerraformReconciler) mapCRDSpecValuesToTerraformConfig(ctx context.Context, terraformBlock *configschema.Block, terraformConfig *cty.Value, crdSpecValues map[string]interface{}) (*cty.Value, string, error) {
+	terraformConfigValueMap := terraformConfig.AsValueMap()
 	// For each attribute in this schema block
-	for attrName, attr := range block.Attributes {
+	for attrName, attr := range terraformBlock.Attributes {
 		// Get the matching attribute name from the CRD map
-		crdValue, foundAttributeInCRD := crdValues[attrName]
+		crdValue, foundAttributeInCRD := crdSpecValues[attrName]
 		if foundAttributeInCRD {
 			// If found, get the cty value from the CRD value
 			getTerraformValueResult := r.getTerraformValueFromInterface(ctx, attr.Type, crdValue)
@@ -344,43 +351,67 @@ func (r *TerraformReconciler) applySpecValuesToTerraformConfig(ctx context.Conte
 					continue // Skip attributes in schema that have an empty value in the CRD
 				}
 			}
-			log.Printf("Adding terraform attribute %s with value %+v", attrName, getTerraformValueResult.Value) // TODO: uncomment when debug logging supported
-			valueMap[attrName] = *getTerraformValueResult.Value
+			// log.Printf("Adding terraform attribute %s with value %+v", attrName, getTerraformValueResult.Value) // TODO: uncomment when debug logging supported
+			terraformConfigValueMap[attrName] = *getTerraformValueResult.Value
 		}
 	}
 
-	// For each nested block
-	for nestedBlockName, nestedBlock := range block.BlockTypes {
-		nestedCRDBlocks, foundNestedBlockInCRD := crdValues[nestedBlockName]
+	// For each nested block in the terraform schema, get the CRD spec values and map to terraform values
+	for nestedTerraformBlockName, nestedTerraformBlock := range terraformBlock.BlockTypes {
+		nestedCRDBlock, foundNestedBlockInCRD := crdSpecValues[nestedTerraformBlockName]
+		// If the block was found in the CRD spec values
 		if foundNestedBlockInCRD {
-			nestedCRDBlockList := nestedCRDBlocks.([]interface{})
-			for _, nestedCRDBlock := range nestedCRDBlockList {
+			isNestedObject := (nestedTerraformBlock.Nesting == configschema.NestingGroup || nestedTerraformBlock.Nesting == configschema.NestingSingle)
+			if isNestedObject {
+				// Nested objects are directly assigned as properties
 				nestedCRDValues := nestedCRDBlock.(map[string]interface{})
-				nestedValue := r.createEmptyResourceValue(nestedBlock.Block, "test1")
-				updatedValue, statusMessage, err := r.applySpecValuesToTerraformConfig(ctx, &nestedBlock.Block, nestedValue, nestedCRDValues)
+				nestedTerraformValue := r.createEmptyTerraformValueForBlock(&nestedTerraformBlock.Block, nestedTerraformBlockName)
+				updatedTerraformValue, statusMessage, err := r.mapCRDSpecValuesToTerraformConfig(ctx, &nestedTerraformBlock.Block, nestedTerraformValue, nestedCRDValues)
 				if err != nil {
 					return nil, "", err
 				}
 				if statusMessage != "" {
 					return nil, statusMessage, nil
 				}
-				if updatedValue == nil || updatedValue.IsNull() {
-					log.Printf("Skipping nil value in nested CRD block %+v", nestedCRDBlock)
-					continue
-				}
-				if updatedValue.Type().IsCollectionType() {
-					if updatedValue.LengthInt() == 0 {
-						log.Printf("Skipping empty collection in nested CRD block %+v", nestedCRDBlock)
+				// log.Printf("Adding terraform block %s with value %+v", nestedBlockName, updatedValue) // TODO: uncomment when debug logging supported
+				terraformConfigValueMap[nestedTerraformBlockName] = *updatedTerraformValue
+			} else {
+				// Nested arrays are wrapped in an array property
+				var updatedValues cty.Value
+				nestedCRDBlockArray := nestedCRDBlock.([]interface{})
+				for _, nestedCRDBlockItem := range nestedCRDBlockArray {
+					nestedCRDValues := nestedCRDBlockItem.(map[string]interface{})
+					nestedValue := r.createEmptyTerraformValueForBlock(&nestedTerraformBlock.Block, nestedTerraformBlockName)
+					updatedValue, statusMessage, err := r.mapCRDSpecValuesToTerraformConfig(ctx, &nestedTerraformBlock.Block, nestedValue, nestedCRDValues)
+					if err != nil {
+						return nil, "", err
+					}
+					if statusMessage != "" {
+						return nil, statusMessage, nil
+					}
+					if updatedValues.IsNull() {
+						if nestedTerraformBlock.Nesting == configschema.NestingList {
+							updatedValues = cty.ListValEmpty(updatedValue.Type())
+						} else if nestedTerraformBlock.Nesting == configschema.NestingSet {
+							updatedValues = cty.SetValEmpty(updatedValue.Type())
+						}
+					}
+					updatedValuesSlice := updatedValues.AsValueSlice()
+					updatedValuesSlice = append(updatedValuesSlice, *updatedValue)
+					if nestedTerraformBlock.Nesting == configschema.NestingList {
+						updatedValues = cty.ListVal(updatedValuesSlice)
+					} else if nestedTerraformBlock.Nesting == configschema.NestingSet {
+						updatedValues = cty.SetVal(updatedValuesSlice)
 					}
 				}
-				log.Printf("Adding terraform block %s with value %+v", nestedBlockName, updatedValue) // TODO: uncomment when debug logging supported
-				valueMap[nestedBlockName] = *updatedValue
+				// log.Printf("Adding terraform block %s with value %+v", nestedBlockName, updatedValue) // TODO: uncomment when debug logging supported
+				terraformConfigValueMap[nestedTerraformBlockName] = updatedValues
 			}
+
 		}
 	}
 
-	log.Printf("CONFIG: %+v", valueMap)
-	newValue := cty.ObjectVal(valueMap)
+	newValue := cty.ObjectVal(terraformConfigValueMap)
 	return &newValue, "", nil
 }
 
@@ -566,7 +597,7 @@ func (r *TerraformReconciler) getReferencedObjectValue(ctx context.Context, refe
 	}
 }
 
-func (r *TerraformReconciler) applyTerraformValueToCrdStatus(schema providers.Schema, value *cty.Value, crd *unstructured.Unstructured) error {
+func (r *TerraformReconciler) mapTerraformValueToCRDStatus(schema providers.Schema, value *cty.Value, crd *unstructured.Unstructured) error {
 	valueMap := value.AsValueMap()
 
 	status, gotStatus, err := unstructured.NestedMap(crd.Object, "status")
@@ -715,7 +746,6 @@ func (r *TerraformReconciler) getValueFromTerraformValue(key string, value *cty.
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
-	log.Printf("PLAN: %+v", config)
 	planResponse := r.provider.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
 		PriorState:       *state, // State after last apply or empty if non-existent
