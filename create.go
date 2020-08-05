@@ -144,8 +144,12 @@ func mapTerraformBlockToOpenAPISchema(statusOpenAPISchema, specOpenAPISchema *op
 		if specOpenAPISchema.Properties == nil {
 			specOpenAPISchema.Properties = map[string]openapi_spec.Schema{}
 		}
-		isNestedObject := (nestedTerraformBlockVal.Nesting == configschema.NestingGroup || nestedTerraformBlockVal.Nesting == configschema.NestingSingle)
-		if isNestedObject {
+		// If the minimum items is greater than one then the block is required
+		if IsTerraformBlockRequired(nestedTerraformBlockVal) {
+			specOpenAPISchema.Required = append(specOpenAPISchema.Required, nestedTerraformBlockKey)
+			statusOpenAPISchema.Required = append(statusOpenAPISchema.Required, nestedTerraformBlockKey)
+		}
+		if IsTerraformBlockANestedObject(nestedTerraformBlockVal) {
 			// For nested objects, assign directly to a property
 			statusOpenAPISchema.Properties[nestedTerraformBlockKey] = nestedStatusOpenAPISchema
 			specOpenAPISchema.Properties[nestedTerraformBlockKey] = nestedSpecOpenAPISchema
@@ -432,4 +436,15 @@ func getOpenAPIArraySchema(itemSchema openapi_spec.Schema) openapi_spec.Schema {
 			},
 		},
 	}
+}
+
+func IsTerraformBlockANestedObject(nestedBlock *configschema.NestedBlock) bool {
+	// Does the nesting mode or the max/min items indicate a nested object?
+	return (nestedBlock.Nesting == configschema.NestingGroup || nestedBlock.Nesting == configschema.NestingSingle ||
+		(nestedBlock.MaxItems == 1 && nestedBlock.MinItems <= 1))
+}
+
+func IsTerraformBlockRequired(nestedBlock *configschema.NestedBlock) bool {
+	// Is atleast one instance of the block required
+	return nestedBlock.MinItems >= 1
 }

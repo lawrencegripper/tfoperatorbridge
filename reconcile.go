@@ -107,7 +107,9 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		if err := json.Unmarshal([]byte(string(jsonSpecRaw)), &crdSpecValues); err != nil {
 			return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
 		}
+		log.Info(fmt.Sprintf("Spec:\n%+v\n", crdSpecValues))
 		terraformConfig, statusMessage, err = r.mapCRDSpecValuesToTerraformConfig(ctx, schema.Block, terraformConfig, crdSpecValues)
+		log.Info(fmt.Sprintf("Config:\n%+v\n", *terraformConfig))
 		if err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err))
 		}
@@ -361,8 +363,7 @@ func (r *TerraformReconciler) mapCRDSpecValuesToTerraformConfig(ctx context.Cont
 		nestedCRDBlock, foundNestedBlockInCRD := crdSpecValues[nestedTerraformBlockName]
 		// If the block was found in the CRD spec values
 		if foundNestedBlockInCRD {
-			isNestedObject := (nestedTerraformBlock.Nesting == configschema.NestingGroup || nestedTerraformBlock.Nesting == configschema.NestingSingle)
-			if isNestedObject {
+			if IsTerraformBlockANestedObject(nestedTerraformBlock) {
 				// Nested objects are directly assigned as properties
 				nestedCRDValues := nestedCRDBlock.(map[string]interface{})
 				nestedTerraformValue := r.createEmptyTerraformValueForBlock(&nestedTerraformBlock.Block, nestedTerraformBlockName)
@@ -377,9 +378,11 @@ func (r *TerraformReconciler) mapCRDSpecValuesToTerraformConfig(ctx context.Cont
 				terraformConfigValueMap[nestedTerraformBlockName] = *updatedTerraformValue
 			} else {
 				// Nested arrays are wrapped in an array property
-				var updatedValues cty.Value
+				var updatedValuesSlice []cty.Value
 				nestedCRDBlockArray := nestedCRDBlock.([]interface{})
+				// Traverse each instance of the block in the array
 				for _, nestedCRDBlockItem := range nestedCRDBlockArray {
+					// Map it to a terraform type and add it to a collection
 					nestedCRDValues := nestedCRDBlockItem.(map[string]interface{})
 					nestedValue := r.createEmptyTerraformValueForBlock(&nestedTerraformBlock.Block, nestedTerraformBlockName)
 					updatedValue, statusMessage, err := r.mapCRDSpecValuesToTerraformConfig(ctx, &nestedTerraformBlock.Block, nestedValue, nestedCRDValues)
@@ -389,23 +392,14 @@ func (r *TerraformReconciler) mapCRDSpecValuesToTerraformConfig(ctx context.Cont
 					if statusMessage != "" {
 						return nil, statusMessage, nil
 					}
-					if updatedValues.IsNull() {
-						if nestedTerraformBlock.Nesting == configschema.NestingList {
-							updatedValues = cty.ListValEmpty(updatedValue.Type())
-						} else if nestedTerraformBlock.Nesting == configschema.NestingSet {
-							updatedValues = cty.SetValEmpty(updatedValue.Type())
-						}
-					}
-					updatedValuesSlice := updatedValues.AsValueSlice()
 					updatedValuesSlice = append(updatedValuesSlice, *updatedValue)
-					if nestedTerraformBlock.Nesting == configschema.NestingList {
-						updatedValues = cty.ListVal(updatedValuesSlice)
-					} else if nestedTerraformBlock.Nesting == configschema.NestingSet {
-						updatedValues = cty.SetVal(updatedValuesSlice)
-					}
 				}
 				// log.Printf("Adding terraform block %s with value %+v", nestedBlockName, updatedValue) // TODO: uncomment when debug logging supported
-				terraformConfigValueMap[nestedTerraformBlockName] = updatedValues
+				if nestedTerraformBlock.Nesting == configschema.NestingList {
+					terraformConfigValueMap[nestedTerraformBlockName] = cty.ListVal(updatedValuesSlice)
+				} else if nestedTerraformBlock.Nesting == configschema.NestingSet {
+					terraformConfigValueMap[nestedTerraformBlockName] = cty.SetVal(updatedValuesSlice)
+				}
 			}
 
 		}

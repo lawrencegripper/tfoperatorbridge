@@ -128,17 +128,14 @@ var _ = Describe("Azure resource creation via CRD", func() {
 				Expect(ok).To(BeTrue(), "CRD should have a status.primary_access_key property")
 				Expect(primaryAccessKey).ToNot(BeEmpty(), "status.primary_access_key should not be an empty string")
 			}, 30)
-			// TODO: Include once we agree where computed attributes live
-			// It("should have the status.network_rules property as an array", func() {
-			// 	var ok bool
-			// 	networkRules, ok := status["network_rules"].([]interface{})
-			// 	Expect(ok).To(BeTrue(), "CRD should have a status.network_rules property")
-			// 	Expect(len(networkRules)).To(Equal(2))
-			// 	networkRule1 := networkRules[0].(map[string]interface{})
-			// 	Expect(networkRule1["default_action"]).To(Equal("Deny"))
-			// 	networkRule2 := networkRules[1].(map[string]interface{})
-			// 	Expect(networkRule2["default_action"]).To(Equal("Allow"))
-			// }, 30)
+			It("should have the status.network_rules property as an array", func() {
+				var ok bool
+				networkRules, ok := status["network_rules"].([]interface{})
+				Expect(ok).To(BeTrue(), "CRD should have a status.network_rules property")
+				Expect(len(networkRules)).To(Equal(1))
+				networkRule := networkRules[0].(map[string]interface{})
+				Expect(networkRule["default_action"]).To(Equal("Deny"))
+			}, 30)
 			It("should encrypt sensitive values stored in the status property", func() {
 				if EncryptionKeyIsSet() {
 					Skip("encryption key is not set, skipping test")
@@ -152,21 +149,37 @@ var _ = Describe("Azure resource creation via CRD", func() {
 				_, err = base64.StdEncoding.DecodeString(primaryAccessKey)
 				Expect(err).To(BeNil(), "status.primary_access_key should be base64 encoded and encrypted")
 			}, 30)
-			It("should have tags on the azure storage account resource in azure", func() {
+			It("should have a tags property on the azure storage account resource in azure", func() {
 				Expect(storageAccountResource.Tags).ToNot(BeNil())
 				Expect(len(storageAccountResource.Tags)).To(Equal(1), "should have 1 tag")
 				envrionmenTag, ok := storageAccountResource.Tags["environment"]
-				Expect(ok).To(BeTrue(), "the tag key 'envrionment' should exist")
+				Expect(ok).To(BeTrue(), "the tag key 'environment' should exist")
 				Expect(*envrionmenTag).To(Equal("Production"))
 			})
-			It("should have network_rules on the azure storage account resource in azure", func() {
+			It("should have a static website property on the azure storage account resource in azure", func() {
+				props, ok := storageAccountResource.Properties.(map[string]interface{})
+				Expect(ok).To(BeTrue(), "properties should be of type map[string]interface{}")
+				staticWebsite, ok := props["staticWebsite"]
+				Expect(ok).To(BeTrue(), "the staticWebsite property should exist in the properties")
+				staticWebsiteValues, ok := staticWebsite.(map[string]interface{})
+				Expect(ok).To(BeTrue(), "the staticWebsite property should be a map[string]interface{}")
+				staticWebsiteIndex, ok := staticWebsiteValues["index_document"]
+				Expect(ok).To(BeTrue(), "the staticWebsite property map should contain an index_document key")
+				Expect(staticWebsiteIndex).To(Equal("index.html"))
+			})
+			It("should have a network acls property on the azure storage account resource in azure", func() {
+				// TODO: currently failing as network rules aren't being applied by terraform
 				props, ok := storageAccountResource.Properties.(map[string]interface{})
 				Expect(ok).To(BeTrue(), "properties should be of type map[string]interface{}")
 				networkRules, ok := props["networkAcls"]
 				Expect(ok).To(BeTrue(), "the networkAcls property should exist in the properties")
-				networkRulesValues, ok := networkRules.([]interface{})
-				Expect(ok).To(BeTrue(), "the networkAcls property should be a slice of interface")
-				Expect(len(networkRulesValues)).To(Equal(2))
+				networkRulesValues, ok := networkRules.(map[string]interface{})
+				Expect(ok).To(BeTrue(), "the networkAcls property should be a map[string]interface{}")
+				ipRules, ok := networkRulesValues["ip_rules"]
+				Expect(ok).To(BeTrue(), "the networkAcls property map should have an ip_rules key")
+				ipRulesValues, ok := ipRules.([]map[string]interface{})
+				Expect(ok).To(BeTrue(), "the ip_rules value should be []map[string]interface{}")
+				Expect(len(ipRulesValues)).To(Equal(3))
 			})
 		})
 		When("deleting an azure storage account", func() {
@@ -345,19 +358,16 @@ func GetAzureStorageAccountCRD(resourceGroup, name, location string) unstructure
 				"location":                 location,
 				"account_tier":             "Standard",
 				"account_replication_type": "LRS",
-				"network_rules": []map[string]interface{}{
-					{
-						"default_action": "Deny",
-						"ip_rules": []string{
-							"100.0.0.1",
-						},
+				"network_rules": map[string]interface{}{
+					"default_action": "Deny",
+					"ip_rules": []string{
+						"100.0.0.1",
+						"100.0.0.2",
+						"100.0.0.3",
 					},
-					{
-						"default_action": "Allow",
-						"ip_rules": []string{
-							"100.0.0.2",
-						},
-					},
+				},
+				"static_website": map[string]interface{}{
+					"index_document": "index.html",
 				},
 				"tags": map[string]string{
 					"environment": "Production",
