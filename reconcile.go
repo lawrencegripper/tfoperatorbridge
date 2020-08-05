@@ -476,13 +476,8 @@ func (r *TerraformReconciler) getTerraformValueFromInterface(ctx context.Context
 		}
 		val := cty.MapVal(resultMap)
 		return GetTerraformValueResult{Value: &val}
-	} else if t.IsListType() || t.IsSetType() {
-		var elementType *cty.Type
-		if t.IsListType() {
-			elementType = t.ListElementType()
-		} else {
-			elementType = t.SetElementType()
-		}
+	} else if t.IsListType() {
+		elementType := t.ListElementType()
 		lv, ok := value.([]interface{})
 		if !ok {
 			return GetTerraformValueResult{Error: fmt.Errorf("Invalid value '%q' - expected '[]interface{}'", value)}
@@ -497,7 +492,7 @@ func (r *TerraformReconciler) getTerraformValueFromInterface(ctx context.Context
 			if getTerraformValueResult.Error != nil {
 				return GetTerraformValueResult{
 					Property: propName,
-					Error:    fmt.Errorf("Error getting list or set value for property %q: %v", propName, v),
+					Error:    fmt.Errorf("Error getting list value for property %q: %v", propName, v),
 				}
 			}
 			if getTerraformValueResult.Value == nil {
@@ -509,6 +504,35 @@ func (r *TerraformReconciler) getTerraformValueFromInterface(ctx context.Context
 			resultList = append(resultList, *getTerraformValueResult.Value)
 		}
 		val := cty.ListVal(resultList)
+		return GetTerraformValueResult{Value: &val}
+	} else if t.IsSetType() {
+		elementType := t.SetElementType()
+		lv, ok := value.([]interface{})
+		if !ok {
+			return GetTerraformValueResult{Error: fmt.Errorf("Invalid value '%q' - expected '[]interface{}'", value)}
+		}
+		resultSet := []cty.Value{}
+		for _, v := range lv {
+			getTerraformValueResult := r.getTerraformValueFromInterface(ctx, *elementType, v)
+			var propName string
+			if getTerraformValueResult.Property != "" {
+				propName = getTerraformValueResult.Property
+			}
+			if getTerraformValueResult.Error != nil {
+				return GetTerraformValueResult{
+					Property: propName,
+					Error:    fmt.Errorf("Error getting set value for property %q: %v", propName, v),
+				}
+			}
+			if getTerraformValueResult.Value == nil {
+				return GetTerraformValueResult{
+					Property:      propName,
+					StatusMessage: getTerraformValueResult.StatusMessage,
+				}
+			}
+			resultSet = append(resultSet, *getTerraformValueResult.Value)
+		}
+		val := cty.SetVal(resultSet)
 		return GetTerraformValueResult{Value: &val}
 	} else {
 		return GetTerraformValueResult{Error: fmt.Errorf("Unhandled type: %v", t.GoString())}
