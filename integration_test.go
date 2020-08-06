@@ -130,10 +130,10 @@ var _ = Describe("Azure resource creation via CRD", func() {
 			}, 30)
 			It("should have the status.network_rules property as an array", func() {
 				var ok bool
-				networkRules, ok := status["network_rules"].([]interface{})
+				networkRules, ok := status["network_rules"].(interface{})
 				Expect(ok).To(BeTrue(), "CRD should have a status.network_rules property")
-				Expect(len(networkRules)).To(Equal(1))
-				networkRule := networkRules[0].(map[string]interface{})
+				networkRule, ok := networkRules.(map[string]interface{})
+				Expect(ok).To(BeTrue(), "status.network_rules should be a map[string]interface{}")
 				Expect(networkRule["default_action"]).To(Equal("Deny"))
 			}, 30)
 			It("should encrypt sensitive values stored in the status property", func() {
@@ -156,29 +156,17 @@ var _ = Describe("Azure resource creation via CRD", func() {
 				Expect(ok).To(BeTrue(), "the tag key 'environment' should exist")
 				Expect(*envrionmenTag).To(Equal("Production"))
 			})
-			It("should have a static website property on the azure storage account resource in azure", func() {
-				props, ok := storageAccountResource.Properties.(map[string]interface{})
-				Expect(ok).To(BeTrue(), "properties should be of type map[string]interface{}")
-				staticWebsite, ok := props["staticWebsite"]
-				Expect(ok).To(BeTrue(), "the staticWebsite property should exist in the properties")
-				staticWebsiteValues, ok := staticWebsite.(map[string]interface{})
-				Expect(ok).To(BeTrue(), "the staticWebsite property should be a map[string]interface{}")
-				staticWebsiteIndex, ok := staticWebsiteValues["index_document"]
-				Expect(ok).To(BeTrue(), "the staticWebsite property map should contain an index_document key")
-				Expect(staticWebsiteIndex).To(Equal("index.html"))
-			})
 			It("should have a network acls property on the azure storage account resource in azure", func() {
-				// TODO: currently failing as network rules aren't being applied by terraform
 				props, ok := storageAccountResource.Properties.(map[string]interface{})
 				Expect(ok).To(BeTrue(), "properties should be of type map[string]interface{}")
 				networkRules, ok := props["networkAcls"]
 				Expect(ok).To(BeTrue(), "the networkAcls property should exist in the properties")
 				networkRulesValues, ok := networkRules.(map[string]interface{})
 				Expect(ok).To(BeTrue(), "the networkAcls property should be a map[string]interface{}")
-				ipRules, ok := networkRulesValues["ip_rules"]
+				ipRules, ok := networkRulesValues["ipRules"]
 				Expect(ok).To(BeTrue(), "the networkAcls property map should have an ip_rules key")
-				ipRulesValues, ok := ipRules.([]map[string]interface{})
-				Expect(ok).To(BeTrue(), "the ip_rules value should be []map[string]interface{}")
+				ipRulesValues := ipRules.([]interface{})
+				Expect(ok).To(BeTrue(), "the ipRules value should be []interface{}")
 				Expect(len(ipRulesValues)).To(Equal(3))
 			})
 		})

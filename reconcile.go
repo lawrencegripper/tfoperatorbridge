@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	openapi_spec "github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
@@ -37,16 +38,18 @@ func WithAesEncryption(encryptionKey string) TerraformReconcilerOption {
 
 // TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
 type TerraformReconciler struct {
-	provider *plugin.GRPCProvider
-	client   client.Client
-	cipher   TerraformStateCipher
+	provider      *plugin.GRPCProvider
+	client        client.Client
+	cipher        TerraformStateCipher
+	openAPISchema openapi_spec.Schema
 }
 
 // NewTerraformReconciler creates a terraform reconciler
-func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client, opts ...TerraformReconcilerOption) *TerraformReconciler {
+func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client, schema openapi_spec.Schema, opts ...TerraformReconcilerOption) *TerraformReconciler {
 	r := &TerraformReconciler{
-		provider: provider,
-		client:   client,
+		provider:      provider,
+		client:        client,
+		openAPISchema: schema,
 	}
 
 	for _, opt := range opts {
@@ -103,13 +106,11 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		terraformConfig = r.createEmptyTerraformValueForBlock(schema.Block, "test1")
 		var statusMessage string
 		// Unmarshal CRD spec JSON string to a value map
-		var crdSpecValues map[string]interface{}
+		crdSpecValues := make(map[string]interface{})
 		if err := json.Unmarshal([]byte(string(jsonSpecRaw)), &crdSpecValues); err != nil {
 			return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
 		}
-		log.Info(fmt.Sprintf("Spec:\n%+v\n", crdSpecValues))
 		terraformConfig, statusMessage, err = r.mapCRDSpecValuesToTerraformConfig(ctx, schema.Block, terraformConfig, crdSpecValues)
-		log.Info(fmt.Sprintf("Config:\n%+v\n", *terraformConfig))
 		if err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err))
 		}
@@ -150,8 +151,7 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		if err = r.setProvisioningState(crd, "Created"); err != nil { // TODO define the states!
 			return reconcileLogError(log, fmt.Errorf("Error saving provisioning state applied: %s", err))
 		}
-		// TODO: Rename to mapTerraformValueToCrdStatus
-		if err = r.mapTerraformValueToCRDStatus(schema, newState, crd); err != nil {
+		if err = r.mapTerraformValuesToCRDStatus(schema, newState, crd); err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error mapping Terraform value to CRD status: %s", err))
 		}
 		if err = r.saveResourceStatus(ctx, crdPreStateChanges, crd); err != nil {
@@ -360,26 +360,27 @@ func (r *TerraformReconciler) mapCRDSpecValuesToTerraformConfig(ctx context.Cont
 
 	// For each nested block in the terraform schema, get the CRD spec values and map to terraform values
 	for nestedTerraformBlockName, nestedTerraformBlock := range terraformBlock.BlockTypes {
-		nestedCRDBlock, foundNestedBlockInCRD := crdSpecValues[nestedTerraformBlockName]
+		crdBlockProperty, foundNestedTerraformBlockInCRD := crdSpecValues[nestedTerraformBlockName]
 		// If the block was found in the CRD spec values
-		if foundNestedBlockInCRD {
-			if IsTerraformBlockANestedObject(nestedTerraformBlock) {
-				// Nested objects are directly assigned as properties
-				nestedCRDValues := nestedCRDBlock.(map[string]interface{})
-				nestedTerraformValue := r.createEmptyTerraformValueForBlock(&nestedTerraformBlock.Block, nestedTerraformBlockName)
-				updatedTerraformValue, statusMessage, err := r.mapCRDSpecValuesToTerraformConfig(ctx, &nestedTerraformBlock.Block, nestedTerraformValue, nestedCRDValues)
+		if foundNestedTerraformBlockInCRD {
+			if IsTerraformNestedBlockAOpenAPIObjectProperty(nestedTerraformBlock) {
+				// Nested terraform blocks that map to objects are directly assigned as properties
+				crdBlockValueMap := crdBlockProperty.(map[string]interface{})
+				terraformValue := r.createEmptyTerraformValueForBlock(&nestedTerraformBlock.Block, nestedTerraformBlockName)
+				updatedTerraformValue, statusMessage, err := r.mapCRDSpecValuesToTerraformConfig(ctx, &nestedTerraformBlock.Block, terraformValue, crdBlockValueMap)
 				if err != nil {
 					return nil, "", err
 				}
 				if statusMessage != "" {
 					return nil, statusMessage, nil
 				}
+				updatedTerraformValue, _ = unflattenTerraformCollectionValue(nestedTerraformBlockName, updatedTerraformValue, nestedTerraformBlock)
 				// log.Printf("Adding terraform block %s with value %+v", nestedBlockName, updatedValue) // TODO: uncomment when debug logging supported
 				terraformConfigValueMap[nestedTerraformBlockName] = *updatedTerraformValue
 			} else {
-				// Nested arrays are wrapped in an array property
+				// Nested terraform blocks tha map to arrays are wrapped in an array property before being assign to a property
 				var updatedValuesSlice []cty.Value
-				nestedCRDBlockArray := nestedCRDBlock.([]interface{})
+				nestedCRDBlockArray := crdBlockProperty.([]interface{})
 				// Traverse each instance of the block in the array
 				for _, nestedCRDBlockItem := range nestedCRDBlockArray {
 					// Map it to a terraform type and add it to a collection
@@ -615,9 +616,234 @@ func (r *TerraformReconciler) getReferencedObjectValue(ctx context.Context, refe
 	}
 }
 
-func (r *TerraformReconciler) mapTerraformValueToCRDStatus(schema providers.Schema, value *cty.Value, crd *unstructured.Unstructured) error {
-	valueMap := value.AsValueMap()
+func walkOpenAPISchemaProperties(schema *openapi_spec.Schema, fn func(string, *openapi_spec.Schema) error) error {
+	for propName, propValue := range schema.Properties {
+		err := fn(propName, &propValue)
+		if err != nil {
+			return err
+		}
 
+		err = walkOpenAPISchemaProperties(&propValue, fn)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func getTerraformAttributeOrNestedBlockFromBlock(key string, block *configschema.Block) (*configschema.Attribute, *configschema.NestedBlock) {
+	for attrName, attrVal := range block.Attributes {
+		if key == attrName {
+			return attrVal, nil
+		}
+	}
+	for nestedBlockName, nestedBlockVal := range block.BlockTypes {
+		if key == nestedBlockName {
+			return nil, nestedBlockVal
+		}
+		attr, block := getTerraformAttributeOrNestedBlockFromBlock(key, &nestedBlockVal.Block)
+		if attr != nil {
+			return attr, nil
+		}
+		if block != nil {
+			return nil, block
+		}
+	}
+	return nil, nil
+}
+
+func (r *TerraformReconciler) encryptString(plain string) (string, bool, error) {
+	if r.cipher != nil {
+		encrypted, err := r.cipher.Encrypt(plain)
+		if err != nil {
+			return plain, false, err
+		}
+		return encrypted, true, nil
+	}
+	return plain, false, nil
+}
+
+// getOpenAPIValueFromTerraformValue gets a value respecting the openapi schema from a terraform value
+func (r *TerraformReconciler) getOpenAPIValueFromTerraformValue(terraformKey string, terraformValue *cty.Value, terraformAttr *configschema.Attribute, terraformBlock *configschema.NestedBlock, openAPIProperty *openapi_spec.Schema) (interface{}, error) {
+	if terraformValue == nil {
+		return nil, fmt.Errorf("Cannot get openapi value from nil terraform value")
+	}
+
+	var sensitive bool
+	var collectionsRequireFlattening bool
+
+	isTerraformBlock := (terraformAttr == nil)
+	if isTerraformBlock {
+		// Blocks can't be sensitive
+		sensitive = false
+		// Some terraform blocks represent value that should be flattened to an object in the openapi schema
+		collectionsRequireFlattening = IsTerraformNestedBlockAOpenAPIObjectProperty(terraformBlock)
+	} else {
+		sensitive = terraformAttr.Sensitive
+	}
+
+	ty := terraformValue.Type()
+	if ty.Equals(cty.String) {
+		if !openAPIProperty.Type.Contains("string") {
+			return nil, fmt.Errorf("Cannot map key %s, only able to map from terraform type string to openapi type string, not type %+v", terraformKey, openAPIProperty.Type)
+		}
+		if terraformValue.IsNull() {
+			return "", nil
+		}
+		var err error
+		s := terraformValue.AsString()
+		if sensitive {
+			var encrypted bool
+			if s, encrypted, err = r.encryptString(s); err != nil {
+				return nil, err
+			}
+			if !encrypted {
+				// TODO: Handle failure to encrypt properly
+				log.Printf("Warning, did not encrypt sensitve value %s", terraformKey)
+			}
+		}
+		return s, nil
+	}
+	if ty.Equals(cty.Number) {
+		if !openAPIProperty.Type.Contains("number") {
+			return nil, fmt.Errorf("Cannot map key %s, only able to map from terraform type number to openapi type number, not type %+v", terraformKey, openAPIProperty.Type)
+		}
+		if terraformValue.IsNull() {
+			return 0, nil
+		}
+		bf := terraformValue.AsBigFloat()
+		if openAPIProperty.Format == "float" {
+			f32, _ := bf.Float32()
+			return f32, nil
+		} else if openAPIProperty.Format == "double" {
+			f64, _ := bf.Float64()
+			return f64, nil
+		} else {
+			return nil, fmt.Errorf("Unsupported number format %s", openAPIProperty.Format)
+		}
+	}
+	if ty.Equals(cty.Bool) {
+		if !openAPIProperty.Type.Contains("boolean") && !openAPIProperty.Type.Contains("string") {
+			return nil, fmt.Errorf("Cannot map key %s, only able to map from terraform type bool to openapi type [boolean, string], not type %+v", terraformKey, openAPIProperty.Type)
+		}
+		if terraformValue.IsNull() {
+			return false, nil
+		}
+		return terraformValue.True(), nil
+	}
+	if ty.IsListType() && !collectionsRequireFlattening {
+		if !openAPIProperty.Type.Contains("array") {
+			return nil, fmt.Errorf("Cannot map key %s, only able to map from terraform type list to openapi type array, not type %+v", terraformKey, openAPIProperty.Type)
+		}
+		if terraformValue.IsNull() {
+			var zeroArr []interface{}
+			return zeroArr, nil
+		}
+		var arr []interface{}
+		valueSlice := terraformValue.AsValueSlice()
+		for _, val := range valueSlice {
+			v, err := r.getOpenAPIValueFromTerraformValue(terraformKey, &val, terraformAttr, nil, openAPIProperty.Items.Schema)
+			if err != nil {
+				return nil, err
+			}
+			if v == nil {
+				continue // skip nil values
+			}
+			arr = append(arr, v)
+		}
+		return arr, nil
+	}
+	if ty.IsSetType() && !collectionsRequireFlattening {
+		if !openAPIProperty.Type.Contains("array") {
+			return nil, fmt.Errorf("Cannot map key %s, only able to map from terraform type set to openapi type array, not set %+v", terraformKey, openAPIProperty.Type)
+		}
+		if terraformValue.IsNull() {
+			var zeroArr []interface{}
+			return zeroArr, nil
+		}
+		var arr []interface{}
+		valueSlice := terraformValue.AsValueSlice()
+		for _, val := range valueSlice {
+			v, err := r.getOpenAPIValueFromTerraformValue(terraformKey, &val, terraformAttr, nil, openAPIProperty.Items.Schema)
+			if err != nil {
+				return nil, err
+			}
+			if v == nil {
+				continue // skip nil values
+			}
+			arr = append(arr, v)
+		}
+		return arr, nil
+	}
+	// For objects and maps, first flatten if required
+	terraformValue, flattened := flattenTerraformCollectionValue(terraformValue, terraformBlock)
+	if ty.IsMapType() || ty.IsObjectType() || flattened {
+		if !openAPIProperty.Type.Contains("object") {
+			return nil, fmt.Errorf("Cannot map key %s, only able to map from terraform type map/object to openapi type object, not set %+v", terraformKey, openAPIProperty.Type)
+		}
+		if terraformValue.IsNull() {
+			if ty.IsMapType() {
+				zeroMap := map[string]interface{}{}
+				return zeroMap, nil
+			}
+			if ty.IsObjectType() {
+				var zeroObj interface{}
+				return zeroObj, nil
+			}
+			return nil, fmt.Errorf("Cannot determine zero value for unsupported type %+v", ty)
+		}
+		vm := make(map[string]interface{})
+		valueMap := terraformValue.AsValueMap()
+		for k, v := range valueMap {
+			var terraformNestedBlock *configschema.Block
+			if terraformBlock != nil {
+				terraformNestedBlock = &terraformBlock.Block
+			}
+			val, err := r.getCRDValueFromTerraformValue(k, &v, terraformNestedBlock)
+			if err != nil {
+				return nil, err
+			}
+			if val == nil {
+				continue // skip nil values
+			}
+			vm[k] = val
+		}
+		return vm, nil
+	}
+	return nil, fmt.Errorf("Unable to map terraform key %s with value %+v and type %+v to a open api value", terraformKey, terraformValue, ty)
+}
+
+// getCRDValueFromTerraformValue derives a CRD value from a given terraform value
+func (r *TerraformReconciler) getCRDValueFromTerraformValue(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
+	var result interface{}
+	// TODO: Optimize!
+
+	// Walk the OpenAPI schema and...
+	err := walkOpenAPISchemaProperties(&r.openAPISchema, func(name string, prop *openapi_spec.Schema) error {
+		// Find the matching openapi property...
+		if name != key {
+			return nil // continue looking...
+		}
+		// Find the matching terraform attribute...
+		terraformAttr, terraformBlock := getTerraformAttributeOrNestedBlockFromBlock(key, block)
+		if terraformAttr == nil && terraformBlock == nil {
+			return fmt.Errorf("Couldn't find terraform attribute with the name %s", key)
+		}
+		// Get the terraform value as an openapi value
+		val, err := r.getOpenAPIValueFromTerraformValue(key, value, terraformAttr, terraformBlock, prop)
+		if err != nil {
+			return err
+		}
+
+		// Capture the resulting value
+		result = val
+		return nil
+	})
+	return result, err
+}
+
+// mapTerraformValuesToCRDStatus maps terraform values into an unstructed CRD structure that respects the CRD's OpenAPI status schema
+func (r *TerraformReconciler) mapTerraformValuesToCRDStatus(schema providers.Schema, value *cty.Value, crd *unstructured.Unstructured) error {
 	status, gotStatus, err := unstructured.NestedMap(crd.Object, "status")
 	if err != nil {
 		return fmt.Errorf("Error getting status field: %s", err)
@@ -626,12 +852,15 @@ func (r *TerraformReconciler) mapTerraformValueToCRDStatus(schema providers.Sche
 		status = map[string]interface{}{}
 	}
 
-	for k, v := range valueMap {
-		value, err := r.getValueFromTerraformValue(k, &v, schema.Block)
+	// Convert the terraform value to a value map and traverse all child
+	// attributes, assigned their value in the status map.
+	terraformValueMap := value.AsValueMap()
+	for k, v := range terraformValueMap {
+		val, err := r.getCRDValueFromTerraformValue(k, &v, schema.Block)
 		if err != nil {
 			return err
 		}
-		status[k] = value
+		status[k] = val
 	}
 
 	err = unstructured.SetNestedMap(crd.Object, status, "status")
@@ -640,127 +869,6 @@ func (r *TerraformReconciler) mapTerraformValueToCRDStatus(schema providers.Sche
 	}
 
 	return nil
-}
-
-func (r *TerraformReconciler) getAttributeFromTerraformBlock(key string, block *configschema.Block) (*configschema.Attribute, error) {
-	if block == nil {
-		return nil, fmt.Errorf("Cannot find attribute in nil block")
-	}
-
-	// Is the attribute in this block?
-	for k, v := range block.Attributes {
-		if k == key {
-			// log.Printf("Key %s found", key) // TODO: uncomment when debug logging supported
-			return v, nil
-		}
-	}
-
-	// Is the attribute in a child block?
-	for bKey, bVal := range block.BlockTypes {
-		// Is the key a block?
-		if bKey == key {
-			// log.Printf("Key %s is a nested block", bKey) // TODO: uncomment when debug logging supported
-			return nil, nil // nil, nil indicates this key belongs to a block not an attribute
-		}
-		a, e := r.getAttributeFromTerraformBlock(bKey, &bVal.Block)
-		if a != nil {
-			return a, nil // We found an attribute
-		}
-		if a == nil && e == nil {
-			return nil, nil // We found a block
-		}
-		// An error here just indicates we couldn't find the attribute or child block in the current block - we should keep looking
-	}
-
-	return nil, fmt.Errorf("Unable to find attribute or block with the key %s", key)
-}
-
-// TODO: Write tests to validate behaviour
-func (r *TerraformReconciler) getValueFromTerraformValue(key string, value *cty.Value, block *configschema.Block) (interface{}, error) {
-	if value.IsNull() {
-		// log.Printf("key %s has null value\n", key) // TODO: uncomment when debug logging supported
-		return nil, nil
-	}
-
-	// Get the attribute for this cty key
-	attr, err := r.getAttributeFromTerraformBlock(key, block)
-	if err != nil {
-		log.Printf("Key not found in schema. Skipping %s\n", key)
-		return nil, nil
-	}
-	var sensitive bool
-	var nextBlock *configschema.Block
-	// Blocks are not attributes in the schema but still represent a value
-	isBlock := (attr == nil)
-	if isBlock {
-		sensitive = false // Blocks can't be sensitive
-		nestedBlock := block.BlockTypes[key]
-		nextBlock = &nestedBlock.Block
-	} else {
-		sensitive = attr.Sensitive
-		nextBlock = block
-	}
-
-	ctyType := value.Type()
-	if ctyType.Equals(cty.String) {
-		s := value.AsString()
-		if sensitive {
-			if r.cipher != nil {
-				log.Printf("Key %s is sensitive, encrypting value", key)
-				s, err = r.cipher.Encrypt(s)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-		return s, nil
-	} else if ctyType.Equals(cty.Bool) {
-		return value.True(), nil
-	} else if ctyType.Equals(cty.Number) {
-		f64, _ := value.AsBigFloat().Float64()
-		return f64, nil
-	} else if ctyType.IsMapType() || ctyType.IsObjectType() {
-		valueMap := value.AsValueMap()
-		nestedMap := make(map[string]interface{})
-		for k, v := range valueMap {
-			nestedValue, err := r.getValueFromTerraformValue(k, &v, nextBlock)
-			if err != nil {
-				return nil, err
-			}
-			nestedMap[k] = nestedValue
-		}
-		return nestedMap, nil
-	} else if ctyType.IsListType() {
-		valueList := value.AsValueSlice()
-		list := make([]interface{}, len(valueList))
-		for _, item := range valueList {
-			value, err := r.getValueFromTerraformValue(key, &item, block)
-			if err != nil {
-				return nil, err
-			}
-			if value == nil {
-				continue
-			}
-			list = append(list, value)
-		}
-		return list, nil
-	} else if ctyType.IsSetType() {
-		valueSet := value.AsValueSet().Values()
-		list := make([]interface{}, len(valueSet))
-		for _, item := range valueSet {
-			value, err := r.getValueFromTerraformValue(key, &item, nextBlock)
-			if err != nil {
-				return nil, err
-			}
-			if value == nil {
-				continue
-			}
-			list = append(list, value)
-		}
-		return list, nil
-	}
-
-	return nil, fmt.Errorf("Value type is unknown %+v. Skipping key %v", ctyType.GoString(), key)
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
@@ -797,4 +905,61 @@ func (r *TerraformReconciler) saveResourceStatus(ctx context.Context, originalRe
 		return fmt.Errorf("Failed saving resource %q %q %w", resource.GetNamespace(), resource.GetName(), err)
 	}
 	return nil
+}
+
+func unflattenTerraformCollectionValue(attrName string, value *cty.Value, nestedBlock *configschema.NestedBlock) (*cty.Value, bool) {
+	// Unflatten any flattened terraform values if required
+	if value == nil {
+		return value, false
+	}
+	if nestedBlock == nil {
+		return value, false
+	}
+	switch nestedBlock.Nesting {
+	case configschema.NestingList:
+		v := cty.ListVal([]cty.Value{*value})
+		return &v, true
+	case configschema.NestingSet:
+		v := cty.SetVal([]cty.Value{*value})
+		return &v, true
+	case configschema.NestingMap:
+		v := cty.MapVal(map[string]cty.Value{
+			attrName: *value,
+		})
+		return &v, true
+	}
+	return value, false
+}
+
+func flattenTerraformCollectionValue(value *cty.Value, nestedBlock *configschema.NestedBlock) (*cty.Value, bool) {
+	// Unflatten any flattened terraform values if required
+	if value == nil {
+		return value, false
+	}
+	if !IsTerraformNestedBlockAOpenAPIObjectProperty(nestedBlock) {
+		return value, false
+	}
+	switch nestedBlock.Nesting {
+	case configschema.NestingList:
+		v := value.AsValueSlice()
+		if len(v) == 1 {
+			return &v[0], true
+		} else {
+			return &cty.EmptyObjectVal, true
+		}
+	case configschema.NestingSet:
+		v := value.AsValueSlice()
+		if len(v) == 1 {
+			return &v[0], true
+		} else {
+			return &cty.EmptyObjectVal, true
+		}
+	case configschema.NestingMap:
+		vm := value.AsValueMap()
+		for _, v := range vm {
+			return &v, true
+		}
+		return &cty.EmptyObjectVal, true
+	}
+	return value, false
 }

@@ -28,7 +28,7 @@ const (
 	OpenAPIArrayType  = "array"
 )
 
-func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPCProvider) ([]GroupVersionFull, error) {
+func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPCProvider) ([]GroupVersionFull, []openapi_spec.Schema, error) {
 	// Status: This runs but very little validation of the outputted openAPI apecs has been done. Bugs are likely
 
 	terraformProviderSchema := terraformProvider.GetSchema()
@@ -70,7 +70,7 @@ func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPC
 		// Map the terraform resource's schema block, map attributes and blocks across to the status and spec OpenAPI schemas
 		err := mapTerraformBlockToOpenAPISchema(&statusOpenAPISchema, &specOpenAPISchema, terraformRes.Block)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Add terraform operator property to store useful metadata used by the operator
@@ -96,7 +96,7 @@ func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPC
 
 	fmt.Printf("Creating CRDs - Done")
 
-	return gvrArray, nil
+	return gvrArray, openAPIResourceSchemas, nil
 }
 
 func mapTerraformBlockToOpenAPISchema(statusOpenAPISchema, specOpenAPISchema *openapi_spec.Schema, terraformBlock *terraform_schema.Block) error {
@@ -149,12 +149,13 @@ func mapTerraformBlockToOpenAPISchema(statusOpenAPISchema, specOpenAPISchema *op
 			specOpenAPISchema.Required = append(specOpenAPISchema.Required, nestedTerraformBlockKey)
 			statusOpenAPISchema.Required = append(statusOpenAPISchema.Required, nestedTerraformBlockKey)
 		}
-		if IsTerraformBlockANestedObject(nestedTerraformBlockVal) {
-			// For nested objects, assign directly to a property
+		if IsTerraformNestedBlockAOpenAPIObjectProperty(nestedTerraformBlockVal) {
+			// For nested objects, assign directly to a property.
+			// This will flatten collections with maxItem <= 1
 			statusOpenAPISchema.Properties[nestedTerraformBlockKey] = nestedStatusOpenAPISchema
 			specOpenAPISchema.Properties[nestedTerraformBlockKey] = nestedSpecOpenAPISchema
 		} else {
-			// For nested arrays, create a wrapper array property and assign as array item
+			// For nested arrays, wrap the objects in an array property
 			statusOpenAPISchema.Properties[nestedTerraformBlockKey] = getOpenAPIArraySchema(nestedStatusOpenAPISchema)
 			specOpenAPISchema.Properties[nestedTerraformBlockKey] = getOpenAPIArraySchema(nestedSpecOpenAPISchema)
 		}
@@ -406,6 +407,7 @@ func waitForCRDsToBeInstalled(clientSet k8s_apiextensionsclientset.Interface, cr
 }
 
 func getRootOpenAPISchema(name string, status *openapi_spec.Schema, spec *openapi_spec.Schema) openapi_spec.Schema {
+	// Returns the root openapi schema containing both the `status` and `spec` sub schemas
 	return openapi_spec.Schema{
 		SchemaProps: openapi_spec.SchemaProps{
 			Type: openapi_spec.StringOrArray{OpenAPIObjectType},
@@ -419,6 +421,7 @@ func getRootOpenAPISchema(name string, status *openapi_spec.Schema, spec *openap
 }
 
 func getOpenAPIObjectSchema() openapi_spec.Schema {
+	// Returns an object openapi schema
 	return openapi_spec.Schema{
 		SchemaProps: openapi_spec.SchemaProps{
 			Type:     openapi_spec.StringOrArray{OpenAPIObjectType},
@@ -428,6 +431,7 @@ func getOpenAPIObjectSchema() openapi_spec.Schema {
 }
 
 func getOpenAPIArraySchema(itemSchema openapi_spec.Schema) openapi_spec.Schema {
+	// Returns a openapi schema wrapped in an openapi array property schema
 	return openapi_spec.Schema{
 		SchemaProps: openapi_spec.SchemaProps{
 			Type: openapi_spec.StringOrArray{OpenAPIArrayType},
@@ -438,13 +442,21 @@ func getOpenAPIArraySchema(itemSchema openapi_spec.Schema) openapi_spec.Schema {
 	}
 }
 
-func IsTerraformBlockANestedObject(nestedBlock *configschema.NestedBlock) bool {
-	// Does the nesting mode or the max/min items indicate a nested object?
-	return (nestedBlock.Nesting == configschema.NestingGroup || nestedBlock.Nesting == configschema.NestingSingle ||
+func IsTerraformNestedBlockAOpenAPIObjectProperty(nestedBlock *configschema.NestedBlock) bool {
+	if nestedBlock == nil {
+		return false
+	}
+	// Does the nesting mode or the max/min items indicate this
+	// should map to a nested object in the openapi schema
+	return (nestedBlock.Nesting == configschema.NestingGroup ||
+		nestedBlock.Nesting == configschema.NestingSingle ||
 		(nestedBlock.MaxItems == 1 && nestedBlock.MinItems <= 1))
 }
 
 func IsTerraformBlockRequired(nestedBlock *configschema.NestedBlock) bool {
+	if nestedBlock == nil {
+		return false
+	}
 	// Is atleast one instance of the block required
 	return nestedBlock.MinItems >= 1
 }
