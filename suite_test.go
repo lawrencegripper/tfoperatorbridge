@@ -68,7 +68,7 @@ func configureAzureResourcesClient() (*resources.Client, error) {
 	}
 
 	azureResourcesClient := resources.NewClient(azureSubID)
-	authorizer, err := GetAzureAuthorizerFromEnvrionmentSettings(azureSubID)
+	authorizer, err := GetAzureAuthorizerFromEnvironmentSettings(azureSubID)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func configureAzureResourceGroupsClient() (*resources.GroupsClient, error) {
 	}
 
 	azureResourceGroupsClient := resources.NewGroupsClient(azureSubID)
-	authorizer, err := GetAzureAuthorizerFromEnvrionmentSettings(azureSubID)
+	authorizer, err := GetAzureAuthorizerFromEnvironmentSettings(azureSubID)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func GetAzureSubscriptionIDFromEnvironmentSettings() (string, error) {
 	return azureSubID, nil
 }
 
-func GetAzureAuthorizerFromEnvrionmentSettings(azureSubID string) (autorest.Authorizer, error) {
+func GetAzureAuthorizerFromEnvironmentSettings(azureSubID string) (autorest.Authorizer, error) {
 	var authorizer autorest.Authorizer
 	// Try the env var names used by the azure-sdk-for-go
 	settings, err := auth.GetSettingsFromEnvironment()

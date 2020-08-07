@@ -382,7 +382,7 @@ func (r *TerraformReconciler) mapCRDSpecValuesToTerraformConfig(ctx context.Cont
 				// log.Printf("Adding terraform block %s with value %+v", nestedBlockName, updatedValue) // TODO: uncomment when debug logging supported
 				terraformConfigValueMap[nestedTerraformBlockName] = *updatedTerraformValue
 			} else {
-				// Nested terraform blocks tha map to arrays are wrapped in an array property before being assign to a property
+				// Nested terraform blocks that map to arrays are wrapped in an array property before being assign to a property
 				var updatedValuesSlice []cty.Value
 				nestedCRDBlockArray := crdBlockProperty.([]interface{})
 				// Traverse each instance of the block in the array
