@@ -67,7 +67,7 @@ var _ = Describe("Azure resource creation via CRD", func() {
 				Expect(resourceGroupID).To(MatchRegexp("/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourceGroups/" + resourceGroupName))
 			}, 30)
 			It("should store terraform state encrypted in status._tfoperator.tfState", func() {
-				if EncryptionKeyIsSet() {
+				if !EncryptionKeyIsSet() {
 					Skip("encryption key is not set, skipping test")
 				}
 				tfStateString, gotTfState, err := unstructured.NestedString(azureResourceGroupCRDResponse.Object, "status", "_tfoperator", "tfState")
@@ -137,7 +137,7 @@ var _ = Describe("Azure resource creation via CRD", func() {
 				Expect(networkRule["default_action"]).To(Equal("Deny"))
 			}, 30)
 			It("should encrypt sensitive values stored in the status property", func() {
-				if EncryptionKeyIsSet() {
+				if !EncryptionKeyIsSet() {
 					Skip("encryption key is not set, skipping test")
 				}
 
