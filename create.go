@@ -46,12 +46,6 @@ func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPC
 			continue
 		}
 
-		// TODO: Remove before merge!!
-		if terraformResName != "azurerm_storage_account" && terraformResName != "azurerm_resource_group" {
-			fmt.Printf("Skipping %q\n", terraformResName)
-			continue
-		}
-
 		// Create an OpenAPI schema objects for the `status` values in the Kubernetes CRD
 		statusOpenAPISchema := openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
