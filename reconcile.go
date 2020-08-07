@@ -111,7 +111,7 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		var statusMessage string
 		// Unmarshal CRD spec JSON string to a value map
 		crdSpecValues := make(map[string]interface{})
-		if err := json.Unmarshal([]byte(string(jsonSpecRaw)), &crdSpecValues); err != nil {
+		if err = json.Unmarshal([]byte(string(jsonSpecRaw)), &crdSpecValues); err != nil {
 			return nil, fmt.Errorf("Error unmarshalling JSON data: %s", err)
 		}
 		terraformConfig, statusMessage, err = r.mapCRDSpecValuesToTerraformConfig(ctx, schema.Block, terraformConfig, crdSpecValues)
@@ -326,7 +326,7 @@ func (r *TerraformReconciler) createEmptyTerraformValueForBlock(block *configsch
 // returns:
 // - cty.Value, updated terraform config value or nil if unsuccessful
 // - string, 	a status message if mapping failed without an error condition
-// - error, 	not nil if an error occured during mapping
+// - error, 	not nil if an error occurred during mapping
 func (r *TerraformReconciler) mapCRDSpecValuesToTerraformConfig(ctx context.Context, terraformBlock *configschema.Block, terraformConfig *cty.Value, crdSpecValues map[string]interface{}) (*cty.Value, string, error) {
 	terraformConfigValueMap := terraformConfig.AsValueMap()
 	// For each attribute in this schema block
@@ -367,7 +367,7 @@ func (r *TerraformReconciler) mapCRDSpecValuesToTerraformConfig(ctx context.Cont
 		crdBlockProperty, foundNestedTerraformBlockInCRD := crdSpecValues[nestedTerraformBlockName]
 		// If the block was found in the CRD spec values
 		if foundNestedTerraformBlockInCRD {
-			if IsTerraformNestedBlockAOpenAPIObjectProperty(nestedTerraformBlock) {
+			if isTerraformNestedBlockAOpenAPIObjectProperty(nestedTerraformBlock) {
 				// Nested terraform blocks that map to objects are directly assigned as properties
 				crdBlockValueMap := crdBlockProperty.(map[string]interface{})
 				terraformValue := r.createEmptyTerraformValueForBlock(&nestedTerraformBlock.Block, nestedTerraformBlockName)
@@ -681,7 +681,7 @@ func (r *TerraformReconciler) getOpenAPIValueFromTerraformValue(terraformKey str
 		// Blocks can't be sensitive
 		sensitive = false
 		// Some terraform blocks represent value that should be flattened to an object in the openapi schema
-		collectionsRequireFlattening = IsTerraformNestedBlockAOpenAPIObjectProperty(terraformBlock)
+		collectionsRequireFlattening = isTerraformNestedBlockAOpenAPIObjectProperty(terraformBlock)
 	} else {
 		sensitive = terraformAttr.Sensitive
 	}
@@ -860,7 +860,8 @@ func (r *TerraformReconciler) mapTerraformValuesToCRDStatus(schema providers.Sch
 	// attributes, assigned their value in the status map.
 	terraformValueMap := value.AsValueMap()
 	for k, v := range terraformValueMap {
-		val, err := r.getCRDValueFromTerraformValue(k, &v, schema.Block)
+		var val interface{}
+		val, err = r.getCRDValueFromTerraformValue(k, &v, schema.Block)
 		if err != nil {
 			return err
 		}
@@ -940,7 +941,7 @@ func flattenTerraformCollectionValue(value *cty.Value, nestedBlock *configschema
 	if value == nil {
 		return value, false
 	}
-	if !IsTerraformNestedBlockAOpenAPIObjectProperty(nestedBlock) {
+	if !isTerraformNestedBlockAOpenAPIObjectProperty(nestedBlock) {
 		return value, false
 	}
 	switch nestedBlock.Nesting {
@@ -948,16 +949,14 @@ func flattenTerraformCollectionValue(value *cty.Value, nestedBlock *configschema
 		v := value.AsValueSlice()
 		if len(v) == 1 {
 			return &v[0], true
-		} else {
-			return &cty.EmptyObjectVal, true
 		}
+		return &cty.EmptyObjectVal, true
 	case configschema.NestingSet:
 		v := value.AsValueSlice()
 		if len(v) == 1 {
 			return &v[0], true
-		} else {
-			return &cty.EmptyObjectVal, true
 		}
+		return &cty.EmptyObjectVal, true
 	case configschema.NestingMap:
 		vm := value.AsValueMap()
 		for _, v := range vm {

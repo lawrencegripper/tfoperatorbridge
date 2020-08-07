@@ -111,26 +111,25 @@ func GetAzureAuthorizerFromEnvrionmentSettings(azureSubID string) (autorest.Auth
 	if err != nil {
 		return nil, err
 	}
-	if _, err := settings.GetClientCredentials(); err == nil {
+	if _, err = settings.GetClientCredentials(); err == nil {
 		return settings.GetAuthorizer()
-	} else {
-		// Try the env vars names used by the terraform azurerm provider
-		var azureClientID string
-		var azureClientSecret string
-		var azureTenantID string
-		if azureClientID = os.Getenv("ARM_CLIENT_ID"); azureClientID == "" {
-			return nil, fmt.Errorf("neither AZURE_CLIENT_ID or ARM_CLIENT_ID are not set")
-		}
-		if azureClientSecret = os.Getenv("ARM_CLIENT_SECRET"); azureClientSecret == "" {
-			return nil, fmt.Errorf("neither AZURE_CLIENT_SECRET or ARM_CLIENT_SECRET are not set")
-		}
-		if azureTenantID = os.Getenv("ARM_TENANT_ID"); azureTenantID == "" {
-			return nil, fmt.Errorf("neither AZURE_TENANT_ID or ARM_TENANT_ID are not set")
-		}
-		authorizer, err = auth.NewClientCredentialsConfig(azureClientID, azureClientSecret, azureTenantID).Authorizer()
-		if err != nil {
-			return nil, err
-		}
+	}
+	// Try the env vars names used by the terraform azurerm provider
+	var azureClientID string
+	var azureClientSecret string
+	var azureTenantID string
+	if azureClientID = os.Getenv("ARM_CLIENT_ID"); azureClientID == "" {
+		return nil, fmt.Errorf("neither AZURE_CLIENT_ID or ARM_CLIENT_ID are not set")
+	}
+	if azureClientSecret = os.Getenv("ARM_CLIENT_SECRET"); azureClientSecret == "" {
+		return nil, fmt.Errorf("neither AZURE_CLIENT_SECRET or ARM_CLIENT_SECRET are not set")
+	}
+	if azureTenantID = os.Getenv("ARM_TENANT_ID"); azureTenantID == "" {
+		return nil, fmt.Errorf("neither AZURE_TENANT_ID or ARM_TENANT_ID are not set")
+	}
+	authorizer, err = auth.NewClientCredentialsConfig(azureClientID, azureClientSecret, azureTenantID).Authorizer()
+	if err != nil {
+		return nil, err
 	}
 	return authorizer, nil
 }

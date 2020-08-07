@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	OpenAPIObjectType = "object"
-	OpenAPIArrayType  = "array"
+	openAPIObjectType = "object"
+	openAPIArrayType  = "array"
 )
 
 func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPCProvider) ([]GroupVersionFull, []openapi_spec.Schema, error) {
@@ -55,14 +55,14 @@ func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPC
 		// Create an OpenAPI schema objects for the `status` values in the Kubernetes CRD
 		statusOpenAPISchema := openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type:     openapi_spec.StringOrArray{OpenAPIObjectType},
+				Type:     openapi_spec.StringOrArray{openAPIObjectType},
 				Required: []string{},
 			},
 		}
 		// Create an OpenAPI schema objects for the `spec` values in the Kubernetes CRD
 		specOpenAPISchema := openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type:     openapi_spec.StringOrArray{OpenAPIObjectType},
+				Type:     openapi_spec.StringOrArray{openAPIObjectType},
 				Required: []string{},
 			},
 		}
@@ -76,7 +76,7 @@ func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPC
 		// Add terraform operator property to store useful metadata used by the operator
 		statusOpenAPISchema.Properties["_tfoperator"] = openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type: []string{OpenAPIObjectType},
+				Type: []string{openAPIObjectType},
 				Properties: map[string]openapi_spec.Schema{
 					"provisioningState":     *openapi_spec.StringProperty(),
 					"tfState":               *openapi_spec.StringProperty(),
@@ -145,11 +145,11 @@ func mapTerraformBlockToOpenAPISchema(statusOpenAPISchema, specOpenAPISchema *op
 			specOpenAPISchema.Properties = map[string]openapi_spec.Schema{}
 		}
 		// If the minimum items is greater than one then the block is required
-		if IsTerraformBlockRequired(nestedTerraformBlockVal) {
+		if isTerraformBlockRequired(nestedTerraformBlockVal) {
 			specOpenAPISchema.Required = append(specOpenAPISchema.Required, nestedTerraformBlockKey)
 			statusOpenAPISchema.Required = append(statusOpenAPISchema.Required, nestedTerraformBlockKey)
 		}
-		if IsTerraformNestedBlockAOpenAPIObjectProperty(nestedTerraformBlockVal) {
+		if isTerraformNestedBlockAOpenAPIObjectProperty(nestedTerraformBlockVal) {
 			// For nested objects, assign directly to a property.
 			// This will flatten collections with maxItem <= 1
 			statusOpenAPISchema.Properties[nestedTerraformBlockKey] = nestedStatusOpenAPISchema
@@ -226,7 +226,7 @@ func getOpenAPISchemaFromTerraformType(terraformAttrName string, terraformAttrTy
 	} else if terraformAttrType.IsObjectType() {
 		openAPISchemaType := openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type: openapi_spec.StringOrArray{OpenAPIObjectType},
+				Type: openapi_spec.StringOrArray{openAPIObjectType},
 			},
 		}
 		isEmptyObject := (len(terraformAttrType.AttributeTypes()) == 0)
@@ -410,7 +410,7 @@ func getRootOpenAPISchema(name string, status *openapi_spec.Schema, spec *openap
 	// Returns the root openapi schema containing both the `status` and `spec` sub schemas
 	return openapi_spec.Schema{
 		SchemaProps: openapi_spec.SchemaProps{
-			Type: openapi_spec.StringOrArray{OpenAPIObjectType},
+			Type: openapi_spec.StringOrArray{openAPIObjectType},
 			Properties: map[string]openapi_spec.Schema{
 				"spec":   *spec,
 				"status": *status,
@@ -424,7 +424,7 @@ func getOpenAPIObjectSchema() openapi_spec.Schema {
 	// Returns an object openapi schema
 	return openapi_spec.Schema{
 		SchemaProps: openapi_spec.SchemaProps{
-			Type:     openapi_spec.StringOrArray{OpenAPIObjectType},
+			Type:     openapi_spec.StringOrArray{openAPIObjectType},
 			Required: []string{},
 		},
 	}
@@ -434,7 +434,7 @@ func getOpenAPIArraySchema(itemSchema openapi_spec.Schema) openapi_spec.Schema {
 	// Returns a openapi schema wrapped in an openapi array property schema
 	return openapi_spec.Schema{
 		SchemaProps: openapi_spec.SchemaProps{
-			Type: openapi_spec.StringOrArray{OpenAPIArrayType},
+			Type: openapi_spec.StringOrArray{openAPIArrayType},
 			Items: &openapi_spec.SchemaOrArray{
 				Schema: &itemSchema,
 			},
@@ -442,7 +442,7 @@ func getOpenAPIArraySchema(itemSchema openapi_spec.Schema) openapi_spec.Schema {
 	}
 }
 
-func IsTerraformNestedBlockAOpenAPIObjectProperty(nestedBlock *configschema.NestedBlock) bool {
+func isTerraformNestedBlockAOpenAPIObjectProperty(nestedBlock *configschema.NestedBlock) bool {
 	if nestedBlock == nil {
 		return false
 	}
@@ -453,7 +453,7 @@ func IsTerraformNestedBlockAOpenAPIObjectProperty(nestedBlock *configschema.Nest
 		(nestedBlock.MaxItems == 1 && nestedBlock.MinItems <= 1))
 }
 
-func IsTerraformBlockRequired(nestedBlock *configschema.NestedBlock) bool {
+func isTerraformBlockRequired(nestedBlock *configschema.NestedBlock) bool {
 	if nestedBlock == nil {
 		return false
 	}
