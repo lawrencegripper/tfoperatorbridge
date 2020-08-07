@@ -1,6 +1,6 @@
 DEV_CONTAINER_TAG:=devcontainer
 
-build: 
+build: lint
 	go build .
 
 run: kind-create terraform-hack-init
@@ -26,11 +26,19 @@ integration-tests: run
 	./scripts/wait-for-bridge.sh
 	ginkgo  -v
 
-lint:
-	golangci-lint run ./... -v
+lint: lint-go lint-shell
+	
+lint-go:
+	golangci-lint run
+
+lint-shell:
+	@find scripts -name '*.sh' | xargs shellcheck -x
 
 fmt:
 	find . -name '*.go' | grep -v vendor | xargs gofmt -s -w
+
+docs:
+	mdspell --en-gb --report **/*.md
 
 ci: lint fmt integration-tests
 

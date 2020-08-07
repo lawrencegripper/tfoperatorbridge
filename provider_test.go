@@ -35,15 +35,21 @@ func Test_PrepareProviderConfigWithDefaults_expectNoError(t *testing.T) {
 	for _, tt := range testedProviders {
 		t.Run(tt.name, func(t *testing.T) {
 			// Clear the HCL config env if already set by previous test
-			os.Setenv("PROVIDER_CONFIG_HCL", "")
+			err := os.Setenv("PROVIDER_CONFIG_HCL", "")
+			if err != nil {
+				panic(err)
+			}
 
 			// Set required envs
 			for name, value := range tt.requiredEnvs {
-				os.Setenv(name, value)
+				err = os.Setenv(name, value)
+				if err != nil {
+					panic(err)
+				}
 			}
 			provider := getInstanceOfProvider(tt.name)
 
-			_, err := createEmptyProviderConfWithDefaults(provider, tt.configBody)
+			_, err = createEmptyProviderConfWithDefaults(provider, tt.configBody)
 			if err != nil {
 				t.Errorf("failed to configure provider with defaults. error = %v", err)
 				return

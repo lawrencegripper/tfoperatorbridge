@@ -59,11 +59,14 @@ func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client,
 	return r
 }
 
+// GetReferencedObjectValueResult : Todo
 type GetReferencedObjectValueResult struct {
 	Value         *string // nil if not retrieved
 	Error         error
 	StatusMessage string // contains info message when Value is nil but there is not an error
 }
+
+// GetTerraformValueResult : Todo
 type GetTerraformValueResult struct {
 	Property      string
 	Value         *cty.Value
@@ -71,6 +74,7 @@ type GetTerraformValueResult struct {
 	StatusMessage string
 }
 
+// Reconcile updates the current state of the resource to match the desired state in the CRD
 func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, crd *unstructured.Unstructured) (*ctrl.Result, error) {
 	log.Info("Reconcile starting")
 	// Get the kinds terraform schema
@@ -99,7 +103,7 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 		}
 		jsonSpecRaw, err := json.Marshal(spec)
 		if err != nil {
-			return reconcileLogError(log, fmt.Errorf("Error marshalling the CRD spec to JSON: %s", err))
+			return reconcileLogError(log, fmt.Errorf("Error marshaling the CRD spec to JSON: %s", err))
 		}
 
 		// Create a TF cty.Value from the Spec JSON
@@ -133,7 +137,7 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 
 	// Save the updated state early and as a separate operation
 	// If this state is lost then the object needs to be imported, so avoid that as far as possible
-	if err := r.saveTerraformStateValue(ctx, crd, newState); err != nil {
+	if err = r.saveTerraformStateValue(ctx, crd, newState); err != nil {
 		// Also, return a ctrl.Result to avoid repeated retries
 		return reconcileLogErrorWithResult(log, &ctrl.Result{}, fmt.Errorf("Error saving Terraform state to CRD: %s", err))
 	}
@@ -256,14 +260,14 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 
 	serializedState, err := ctyjson.Marshal(*state, state.Type())
 	if err != nil {
-		return fmt.Errorf("Error marshalling state: %s", err)
+		return fmt.Errorf("Error marshaling state: %s", err)
 	}
 
 	var stateBytes []byte
 	if r.cipher != nil {
-		encryptedState, err := r.cipher.Encrypt(string(serializedState))
-		if err != nil {
-			return err
+		encryptedState, errEncrypt := r.cipher.Encrypt(string(serializedState))
+		if errEncrypt != nil {
+			return errEncrypt
 		}
 		encodedState := base64.StdEncoding.EncodeToString([]byte(encryptedState))
 		stateBytes = []byte(encodedState)
