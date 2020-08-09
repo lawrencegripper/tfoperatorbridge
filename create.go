@@ -10,6 +10,7 @@ import (
 	"time"
 
 	openapi_spec "github.com/go-openapi/spec"
+	"github.com/hashicorp/terraform/configs/configschema"
 	terraform_schema "github.com/hashicorp/terraform/configs/configschema"
 	terraform_plugin "github.com/hashicorp/terraform/plugin"
 	"github.com/zclconf/go-cty/cty"
@@ -22,47 +23,54 @@ import (
 	k8s_wait "k8s.io/apimachinery/pkg/util/wait"
 )
 
-func createCRDsForResources(provider *terraform_plugin.GRPCProvider) []GroupVersionFull {
+const (
+	openAPIObjectType = "object"
+	openAPIArrayType  = "array"
+)
+
+func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPCProvider) ([]GroupVersionFull, []openapi_spec.Schema, error) {
 	// Status: This runs but very little validation of the outputted openAPI apecs has been done. Bugs are likely
 
-	tfSchema := provider.GetSchema()
+	terraformProviderSchema := terraformProvider.GetSchema()
 
-	// Each resource in terraform becomes a openAPI Schema stored in this array
-	resources := []openapi_spec.Schema{}
+	// Each resource in the terraform providers becomes a OpenAPI schema stored in this array
+	openAPIResourceSchemas := []openapi_spec.Schema{}
 
 	// Foreach of the resources create a openAPI spec.
 	// 1. Split terraform computed values into `status` of the CRD as these are unsettable by user
 	// 2. Put required and optional params into the `spec` of the CRD. Setting required status accordinly.
-	for resourceName, resource := range tfSchema.ResourceTypes {
+	for terraformResName, terraformRes := range terraformProviderSchema.ResourceTypes {
 		// Skip any resources which aren't valid DNS names as they're too long
-		if len(resourceName) > 63 {
-			fmt.Printf("Skipping invalid resource - name too long %q", resourceName)
+		if len(terraformResName) > 63 {
+			fmt.Printf("Skipping invalid resource - name too long %q", terraformResName)
 			continue
 		}
 
-		// Create objects for both the spec and status blocks
-		specCRD := openapi_spec.Schema{
+		// Create an OpenAPI schema objects for the `status` values in the Kubernetes CRD
+		statusOpenAPISchema := openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type:     openapi_spec.StringOrArray{"object"},
+				Type:     openapi_spec.StringOrArray{openAPIObjectType},
 				Required: []string{},
 			},
 		}
-		// statusCRD is ONLY set for documentation purposes and is not currently enforced in reconciliation
-		statusCRD := openapi_spec.Schema{
+		// Create an OpenAPI schema objects for the `spec` values in the Kubernetes CRD
+		specOpenAPISchema := openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type:     openapi_spec.StringOrArray{"object"},
+				Type:     openapi_spec.StringOrArray{openAPIObjectType},
 				Required: []string{},
 			},
 		}
 
-		// Given the schema block for the tf resources add the properties to
-		// either spec or status objects created above
-		addBlockToSchema(&statusCRD, &specCRD, "root", resource.Block)
+		// Map the terraform resource's schema block, map attributes and blocks across to the status and spec OpenAPI schemas
+		err := mapTerraformBlockToOpenAPISchema(&statusOpenAPISchema, &specOpenAPISchema, terraformRes.Block)
+		if err != nil {
+			return nil, nil, err
+		}
 
-		// Add tf operator property
-		statusCRD.Properties["_tfoperator"] = openapi_spec.Schema{
+		// Add terraform operator property to store useful metadata used by the operator
+		statusOpenAPISchema.Properties["_tfoperator"] = openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
-				Type: []string{"object"},
+				Type: []string{openAPIObjectType},
 				Properties: map[string]openapi_spec.Schema{
 					"provisioningState":     *openapi_spec.StringProperty(),
 					"tfState":               *openapi_spec.StringProperty(),
@@ -71,88 +79,170 @@ func createCRDsForResources(provider *terraform_plugin.GRPCProvider) []GroupVers
 			},
 		}
 
-		// Create a top level schema to represent the resource and add spec and status to it.
-		def := openapi_spec.Schema{}
-		def.Type = openapi_spec.StringOrArray{"object"}
-		// Compose these into a top level object
-		def.Properties = map[string]openapi_spec.Schema{
-			"spec":   specCRD,
-			"status": statusCRD,
-		}
-		def.Description = resourceName
+		// Create a root OpenAPI schema containing the spec and status schemas as properties
+		rootOpenAPISchema := getRootOpenAPISchema(terraformResName, &statusOpenAPISchema, &specOpenAPISchema)
 
-		resources = append(resources, def)
+		openAPIResourceSchemas = append(openAPIResourceSchemas, rootOpenAPISchema)
 	}
 
 	// Install all of the resources as CRDs into the cluster
-	gvrArray := installCRDs(resources, "azurerm", fmt.Sprintf("v%v", "alpha1"))
+	gvrArray := installOpenAPISchemasAsK8sCRDs(openAPIResourceSchemas, "azurerm", fmt.Sprintf("v%v", "alpha1"))
 
 	fmt.Printf("Creating CRDs - Done")
 
-	return gvrArray
+	return gvrArray, openAPIResourceSchemas, nil
 }
 
-// This walks the schema and adds the fields to spec/status based on whether they're computed or not.
-func addBlockToSchema(statusCRD, specCRD *openapi_spec.Schema, blockName string, block *terraform_schema.Block) {
-	for attributeName, attribute := range block.Attributes {
-		// Computer attributes from Terraform map to the `status` block in K8s CRDS
-		if attribute.Computed {
-			if attribute.Required {
-				// Note the the `required` status is set on the parent field so we have to add this at this stage.
-				// Example: { required: ["thing1"], subObj { thing1, thing2, } <- rough sudo code.
-				statusCRD.Required = append(statusCRD.Required, attributeName)
+func mapTerraformBlockToOpenAPISchema(statusOpenAPISchema, specOpenAPISchema *openapi_spec.Schema, terraformBlock *terraform_schema.Block) error {
+	// Traverse all attributes in the terraform block and map them to a property in an OpenAPI schema
+	for terraformAttrName, terraformAttr := range terraformBlock.Attributes {
+		// Terraform attributes marked as Computed should be added to the status OpenAPI schema.
+		// Terraform attributes marked as not Computed should be added to the spec OpenAPI schema.
+		shouldAddToStatusOpenAPISchema := terraformAttr.Computed
+		// Terraform attributes marked as Required should be added as required in the OpenAPI schema.
+		// NOTE: The required field should be set on the parent schema property.
+		isRequired := terraformAttr.Required
+
+		if shouldAddToStatusOpenAPISchema {
+			if isRequired {
+				statusOpenAPISchema.Required = append(statusOpenAPISchema.Required, terraformAttrName)
 			}
-			// Add the attribute (think field) from the TF schema to the openAPI Spec
-			addAttributeToSchema(statusCRD, attributeName, attribute)
-		} else {
-			// All other attributes are for the `spec` block
-			if attribute.Required {
-				specCRD.Required = append(specCRD.Required, attributeName)
+			err := mapTerraformAttributeToOpenAPISchema(statusOpenAPISchema, terraformAttrName, terraformAttr)
+			if err != nil {
+				return err
 			}
-			addAttributeToSchema(specCRD, attributeName, attribute)
+		} else { // should add to spec OpenAPI schema
+			if terraformAttr.Required {
+				specOpenAPISchema.Required = append(specOpenAPISchema.Required, terraformAttrName)
+			}
+			err := mapTerraformAttributeToOpenAPISchema(specOpenAPISchema, terraformAttrName, terraformAttr)
+			if err != nil {
+				return err
+			}
 		}
 	}
-}
 
-func addAttributeToSchema(schema *openapi_spec.Schema, attributeName string, attribute *terraform_schema.Attribute) {
-	// Convert the type from the TF type to the best matching openAPI Type (recursive for complex types)
-	property := getSchemaForType(attributeName, &attribute.Type)
-	property.Description = attribute.Description
-	// Todo Handle other types
-	if schema.Properties == nil {
-		schema.Properties = map[string]openapi_spec.Schema{}
+	// Traverse all nested terraform blocks in the current terraform block and map them to a property in an OpenAPI schema
+	for nestedTerraformBlockKey, nestedTerraformBlockVal := range terraformBlock.BlockTypes {
+		// All terraform blocks are mapped to object properties in OpenAPI schema
+		nestedStatusOpenAPISchema := getOpenAPIObjectSchema()
+		nestedSpecOpenAPISchema := getOpenAPIObjectSchema()
+		err := mapTerraformBlockToOpenAPISchema(&nestedStatusOpenAPISchema, &nestedSpecOpenAPISchema, &nestedTerraformBlockVal.Block)
+		if err != nil {
+			return err
+		}
+		// We can't differentiate blocks as Computed so all blocks are added to both the spec and status OpenAPI schema
+		if statusOpenAPISchema.Properties == nil {
+			statusOpenAPISchema.Properties = map[string]openapi_spec.Schema{}
+		}
+		if specOpenAPISchema.Properties == nil {
+			specOpenAPISchema.Properties = map[string]openapi_spec.Schema{}
+		}
+		// If the minimum items is greater than one then the block is required
+		if isTerraformBlockRequired(nestedTerraformBlockVal) {
+			specOpenAPISchema.Required = append(specOpenAPISchema.Required, nestedTerraformBlockKey)
+			statusOpenAPISchema.Required = append(statusOpenAPISchema.Required, nestedTerraformBlockKey)
+		}
+		if isTerraformNestedBlockAOpenAPIObjectProperty(nestedTerraformBlockVal) {
+			// For nested objects, assign directly to a property.
+			// This will flatten collections with maxItem <= 1
+			statusOpenAPISchema.Properties[nestedTerraformBlockKey] = nestedStatusOpenAPISchema
+			specOpenAPISchema.Properties[nestedTerraformBlockKey] = nestedSpecOpenAPISchema
+		} else {
+			// For nested arrays, wrap the objects in an array property
+			statusOpenAPISchema.Properties[nestedTerraformBlockKey] = getOpenAPIArraySchema(nestedStatusOpenAPISchema)
+			specOpenAPISchema.Properties[nestedTerraformBlockKey] = getOpenAPIArraySchema(nestedSpecOpenAPISchema)
+		}
 	}
-	schema.Properties[attributeName] = *property
+	return nil
 }
 
-func getSchemaForType(name string, item *cty.Type) *openapi_spec.Schema {
-	// Bulk of mapping from TF Schema -> OpenAPI Schema here.
-	// TF Type reference: https://www.terraform.io/docs/extend/schemas/schema-types.html
-	// Open API Type reference: https://swagger.io/docs/specification/data-models/data-types/
+func mapTerraformAttributeToOpenAPISchema(parentOpenAPISchema *openapi_spec.Schema, terraformAttrName string, terraformAttr *terraform_schema.Attribute) error {
+	if parentOpenAPISchema == nil {
+		return fmt.Errorf("cannot map terraform attribute %s to nil openapi schema", terraformAttrName)
+	}
+	if terraformAttr == nil {
+		return fmt.Errorf("cannot map nil terraform attribute %s to openapi schema", terraformAttrName)
+	}
 
-	var property *openapi_spec.Schema
-	// Handle basic types - string, bool, number
-	if item.Equals(cty.String) {
-		property = openapi_spec.StringProperty()
-	} else if item.Equals(cty.Bool) {
-		property = openapi_spec.BoolProperty()
-	} else if item.Equals(cty.Number) {
-		property = openapi_spec.Float64Property()
-		// Handle more complex types - map, set and list
-	} else if item.IsMapType() {
-		mapType := getSchemaForType(name+"mapType", item.MapElementType())
-		property = openapi_spec.MapProperty(mapType)
-	} else if item.IsListType() {
-		listType := getSchemaForType(name+"listType", item.ListElementType())
-		property = openapi_spec.ArrayProperty(listType)
-	} else if item.IsSetType() {
-		setType := getSchemaForType(name+"setType", item.SetElementType())
-		property = openapi_spec.ArrayProperty(setType)
+	openAPISchema, err := getOpenAPISchemaFromTerraformType(terraformAttrName, &terraformAttr.Type)
+	if err != nil {
+		return err
+	}
+	if openAPISchema == nil {
+		log.Printf("Terraform attribute of type %+v is empty, Skipping %s", terraformAttr.Type, terraformAttrName)
+		return nil
+	}
+	openAPISchema.Description = terraformAttr.Description
+
+	if parentOpenAPISchema.Properties == nil {
+		parentOpenAPISchema.Properties = map[string]openapi_spec.Schema{}
+	}
+	parentOpenAPISchema.Properties[terraformAttrName] = *openAPISchema
+	return nil
+}
+
+// getOpenAPISchemaFromTerraformType returns the an OpenAPI schema representing the most suitable type for the
+// provided terraform attribute type. Returns an error if the attribute type is missing or a suitable type
+// cannot be determined.
+// References:
+// - terraform schema types: https://www.terraform.io/docs/extend/schemas/schema-types.html
+// - openapi schema types: https://swagger.io/docs/specification/data-models/data-types/
+func getOpenAPISchemaFromTerraformType(terraformAttrName string, terraformAttrType *cty.Type) (*openapi_spec.Schema, error) {
+	if terraformAttrType == nil {
+		return nil, fmt.Errorf("cannot get openapi schema for nil terraform attribute %s type", terraformAttrName)
+	}
+	var openAPIPropertySchema *openapi_spec.Schema
+	if terraformAttrType.Equals(cty.String) {
+		openAPIPropertySchema = openapi_spec.StringProperty()
+	} else if terraformAttrType.Equals(cty.Bool) {
+		openAPIPropertySchema = openapi_spec.BoolProperty()
+	} else if terraformAttrType.Equals(cty.Number) {
+		openAPIPropertySchema = openapi_spec.Float64Property()
+	} else if terraformAttrType.IsMapType() {
+		mapType, err := getOpenAPISchemaFromTerraformType(terraformAttrName+"mapType", terraformAttrType.MapElementType())
+		if err != nil {
+			return nil, err
+		}
+		openAPIPropertySchema = openapi_spec.MapProperty(mapType)
+	} else if terraformAttrType.IsListType() {
+		listType, err := getOpenAPISchemaFromTerraformType(terraformAttrName+"listType", terraformAttrType.ListElementType())
+		if err != nil {
+			return nil, err
+		}
+		openAPIPropertySchema = openapi_spec.ArrayProperty(listType)
+	} else if terraformAttrType.IsSetType() {
+		setType, err := getOpenAPISchemaFromTerraformType(terraformAttrName+"setType", terraformAttrType.SetElementType())
+		if err != nil {
+			return nil, err
+		}
+		openAPIPropertySchema = openapi_spec.ArrayProperty(setType)
+	} else if terraformAttrType.IsObjectType() {
+		openAPISchemaType := openapi_spec.Schema{
+			SchemaProps: openapi_spec.SchemaProps{
+				Type: openapi_spec.StringOrArray{openAPIObjectType},
+			},
+		}
+		isEmptyObject := (len(terraformAttrType.AttributeTypes()) == 0)
+		if isEmptyObject {
+			return nil, nil // Ignore empty objects
+		}
+		for terraformObjAttrTypeKey, terraformObjAttrTypeVal := range terraformAttrType.AttributeTypes() {
+			openAPIAttrSchema, err := getOpenAPISchemaFromTerraformType(terraformAttrName+terraformObjAttrTypeKey, &terraformObjAttrTypeVal)
+			if err != nil {
+				return nil, err
+			}
+			if openAPISchemaType.Properties == nil {
+				openAPISchemaType.Properties = map[string]openapi_spec.Schema{}
+			}
+			openAPISchemaType.Properties[terraformObjAttrTypeKey] = *openAPIAttrSchema
+		}
+		openAPIPropertySchema = &openAPISchemaType
 	} else {
-		log.Printf("[Error] Unknown type on attribute. Skipping %v", name)
+		return nil, fmt.Errorf("unknown terraform attribute %s of type %+v", terraformAttrType, terraformAttrName)
 	}
 
-	return property
+	return openAPIPropertySchema, nil
 }
 
 // GroupVersionFull provides both the groupVersionKind and groupVersionResource representations of the CRD. Todo: Investigate if existing types can supply this.
@@ -162,10 +252,10 @@ type GroupVersionFull struct {
 }
 
 // k8s stuff
-func installCRDs(resources []openapi_spec.Schema, providerName, providerVersion string) []GroupVersionFull {
+func installOpenAPISchemasAsK8sCRDs(openAPIResources []openapi_spec.Schema, terraformProviderName, terraformProviderVersion string) []GroupVersionFull {
 	clientConfig := getK8sClientConfig()
 	// Tracks all CRDs Installed or preexisting generated from the TF Schema
-	gvArray := make([]GroupVersionFull, 0, len(resources))
+	gvArray := make([]GroupVersionFull, 0, len(openAPIResources))
 	// Tracks only CRDS newly installed in this run
 	crdsToCheckInstalled := []GroupVersionFull{}
 
@@ -183,7 +273,7 @@ func installCRDs(resources []openapi_spec.Schema, providerName, providerVersion 
 		installedCrdsMap[crd.Name] = true
 	}
 
-	for _, resource := range resources {
+	for _, resource := range openAPIResources {
 		data, _ := json.Marshal(resource)
 
 		// K8s uses it's own type system for OpenAPI.
@@ -193,9 +283,9 @@ func installCRDs(resources []openapi_spec.Schema, providerName, providerVersion 
 
 		// Create the names for the CRD
 		kind := strings.Replace(strings.Replace(resource.Description, "_", "-", -1), "azurerm-", "", -1)
-		groupName := providerName + ".tfb.local"
+		groupName := terraformProviderName + ".tfb.local"
 		resource := kind + "s"
-		version := providerVersion
+		version := terraformProviderVersion
 		crdName := resource + "." + groupName
 
 		crd := &k8s_apiextensionsv1beta1.CustomResourceDefinition{
@@ -271,7 +361,6 @@ func createCustomResourceDefinition(namespace string, clientSet k8s_apiextension
 
 		return nil, err
 	}
-
 	return crd, nil
 }
 
@@ -309,4 +398,59 @@ func waitForCRDsToBeInstalled(clientSet k8s_apiextensionsclientset.Interface, cr
 			panic(err)
 		}
 	}
+}
+
+func getRootOpenAPISchema(name string, status *openapi_spec.Schema, spec *openapi_spec.Schema) openapi_spec.Schema {
+	// Returns the root openapi schema containing both the `status` and `spec` sub schemas
+	return openapi_spec.Schema{
+		SchemaProps: openapi_spec.SchemaProps{
+			Type: openapi_spec.StringOrArray{openAPIObjectType},
+			Properties: map[string]openapi_spec.Schema{
+				"spec":   *spec,
+				"status": *status,
+			},
+			Description: name,
+		},
+	}
+}
+
+func getOpenAPIObjectSchema() openapi_spec.Schema {
+	// Returns an object openapi schema
+	return openapi_spec.Schema{
+		SchemaProps: openapi_spec.SchemaProps{
+			Type:     openapi_spec.StringOrArray{openAPIObjectType},
+			Required: []string{},
+		},
+	}
+}
+
+func getOpenAPIArraySchema(itemSchema openapi_spec.Schema) openapi_spec.Schema {
+	// Returns a openapi schema wrapped in an openapi array property schema
+	return openapi_spec.Schema{
+		SchemaProps: openapi_spec.SchemaProps{
+			Type: openapi_spec.StringOrArray{openAPIArrayType},
+			Items: &openapi_spec.SchemaOrArray{
+				Schema: &itemSchema,
+			},
+		},
+	}
+}
+
+func isTerraformNestedBlockAOpenAPIObjectProperty(nestedBlock *configschema.NestedBlock) bool {
+	if nestedBlock == nil {
+		return false
+	}
+	// Does the nesting mode or the max/min items indicate this
+	// should map to a nested object in the openapi schema
+	return (nestedBlock.Nesting == configschema.NestingGroup ||
+		nestedBlock.Nesting == configschema.NestingSingle ||
+		(nestedBlock.MaxItems == 1 && nestedBlock.MinItems <= 1))
+}
+
+func isTerraformBlockRequired(nestedBlock *configschema.NestedBlock) bool {
+	if nestedBlock == nil {
+		return false
+	}
+	// Is atleast one instance of the block required
+	return nestedBlock.MinItems >= 1
 }

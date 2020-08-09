@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	openapi_spec "github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/plugin"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -76,7 +77,7 @@ func runtimeObjFromGVK(r schema.GroupVersionKind) runtime.Object {
 	return obj
 }
 
-func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVersionFull) {
+func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVersionFull, schemas []openapi_spec.Schema) {
 	ctrl.SetLogger(zap.Logger(true))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{})
@@ -93,21 +94,22 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 	}
 
 	var opts []TerraformReconcilerOption
-	if encryptionKey, exists := os.LookupEnv("ENCRYPTION_KEY"); exists && encryptionKey != "" {
+	if encryptionKey := os.Getenv("ENCRYPTION_KEY"); encryptionKey != "" {
 		opts = append(opts, WithAesEncryption(encryptionKey))
 	}
 
-	for _, gv := range resources {
+	for i, gv := range resources {
 		groupVersionKind := gv.GroupVersionKind
 		setupLog.Info("Enabling controller for resource", "kind", gv.GroupVersionKind.Kind)
 		client := mgr.GetClient()
+		schema := schemas[i] // TODO: Assumes schema and resources have the same index, make more reboust
 		err = ctrl.NewControllerManagedBy(mgr).
 			// Note: Generation Changed Predicate means controller only called when an update is made to spec
 			// or other case causing generation to change
 			For(runtimeObjFromGVK(gv.GroupVersionKind), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 			Complete(&controller{
 				Client:       client,
-				tfReconciler: NewTerraformReconciler(provider, client, opts...),
+				tfReconciler: NewTerraformReconciler(provider, client, schema, opts...),
 				scheme:       mgr.GetScheme(),
 				gvk:          &groupVersionKind,
 			})

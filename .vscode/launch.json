@@ -12,6 +12,15 @@
             "program": "${workspaceFolder}",
             "envFile": "${workspaceFolder}/.env",
             "args": []
+        },
+        {
+            "name": "Integration Tests",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "args": []
         }
     ]
 }
