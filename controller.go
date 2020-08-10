@@ -26,6 +26,10 @@ var (
 	recLog   = ctrl.Log.WithName("reconciler")
 )
 
+const (
+	encryptionKeyEnvVar = "TF_STATE_ENCRYPTION_KEY"
+)
+
 type controller struct {
 	client.Client
 	scheme       *runtime.Scheme
@@ -94,7 +98,7 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 	}
 
 	var opts []TerraformReconcilerOption
-	if encryptionKey := os.Getenv("ENCRYPTION_KEY"); encryptionKey != "" {
+	if encryptionKey := os.Getenv(encryptionKeyEnvVar); encryptionKey != "" {
 		opts = append(opts, WithAesEncryption(encryptionKey))
 	}
 
