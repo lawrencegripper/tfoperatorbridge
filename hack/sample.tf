@@ -1,5 +1,5 @@
 provider "azurerm" {
-  version = "~> 2.16"
+  version = "2.22.0"
   features {}
 }
 
@@ -9,12 +9,12 @@ provider "azuread" {
 }
 
 provider "aws" {
-  version = "~> 2.70.0"
+  version = "2.70.0"
 }
 
 
 provider "helm" {
-  version = "~> 1.2.3"
+  version = "1.2.3"
 }
 
 

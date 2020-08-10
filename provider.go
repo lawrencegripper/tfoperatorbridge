@@ -1,27 +1,109 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"io/ioutil"
 	"os"
+	"path"
 
 	"github.com/go-logr/logr"
 	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
+
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/hashicorp/terraform-exec/tfexec"
+	"github.com/hashicorp/terraform-exec/tfinstall"
 	"github.com/hashicorp/terraform/lang"
 	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/plugin/discovery"
 	"github.com/hashicorp/terraform/providers"
+
 	"github.com/zclconf/go-cty/cty"
 )
 
-func getInstanceOfProvider(providerName string) *plugin.GRPCProvider {
-	pluginMeta := discovery.FindPlugins(plugin.ProviderPluginName, []string{"./hack/.terraform/plugins/linux_amd64/"}).WithName(providerName)
+const (
+	providerNameEnv   = "TF_PROVIDER_NAME"
+	providerVerionEnv = "TF_PROVIDER_VERSION"
+	providerPathEnv   = "TF_PROVIDER_PATH"
+)
+
+func SetupProvider() (*plugin.GRPCProvider, error) {
+	providerName := os.Getenv(providerNameEnv)
+	if providerName == "" {
+		return nil, fmt.Errorf("Env %q not set and is required", providerNameEnv)
+	}
+	pathFromEnv := os.Getenv(providerPathEnv)
+
+	// Best route for serious use cases is to provider the provider binary as a volume mounted
+	// into the container.
+	//
+	// If a path is set then the user has decided to so this so
+	// we will skip the TF init stage and directly use the provider binary on the path provided
+	if pathFromEnv != "" {
+		return getInstanceOfProvider(providerName, pathFromEnv)
+	}
+
+	versionFromEnv := os.Getenv(providerVerionEnv)
+	if versionFromEnv == "" {
+		return nil, fmt.Errorf("Env %q not set and is required when path to provider binary isn't set with %q", providerVerionEnv, providerPathEnv)
+	}
+
+	// If only the provider name and version are provided we'll install TF and use
+	// `terraform init` to install the provider from hashicorp registry
+	path, err := installProvider(providerName, providerVerionEnv)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to setup provider as provider install failed: %w", err)
+	}
+
+	return getInstanceOfProvider(providerName, path)
+
+}
+
+func installProvider(name string, version string) (string, error) {
+	tmpDir, err := ioutil.TempDir("", "tfinstall")
+	if err != nil {
+		return "", fmt.Errorf("Failed to create temp dir. %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	execPath, err := tfinstall.Find(tfinstall.LatestVersion(tmpDir, false))
+	if err != nil {
+		return "", fmt.Errorf("Failed to install Terraform %w", err)
+	}
+
+	workingDir, err := ioutil.TempDir("", "tfproviders")
+
+	providerFileContent := fmt.Sprintf(`
+	provider "%s" {
+		version = "%s"
+		features {}
+	}
+	`, name, version)
+
+	err = ioutil.WriteFile(path.Join(workingDir, "provider.tf"), []byte(providerFileContent), 0644)
+	if err != nil {
+		return "", fmt.Errorf("Failed to create provider.tf file %w", err)
+	}
+	tf, err := tfexec.NewTerraform(workingDir, execPath)
+	if err != nil {
+		return "", fmt.Errorf("Failed to create TF context %w", err)
+	}
+
+	err = tf.Init(context.Background(), tfexec.Upgrade(true), tfexec.LockTimeout("60s"))
+	if err != nil {
+		return "", fmt.Errorf("Failed to init TF %w", err)
+	}
+
+	return path.Join(workingDir, "/.terraform/plugins/linux_amd64/"), nil
+}
+
+func getInstanceOfProvider(providerName string, path string) (*plugin.GRPCProvider, error) {
+	pluginMeta := discovery.FindPlugins(plugin.ProviderPluginName, []string{path}).WithName(providerName)
 
 	if pluginMeta.Count() < 1 {
-		log.Println("Provide not found locally attempting to download")
+		return nil, fmt.Errorf("Provide:%q not found at path:%q", providerName, path)
 	}
 	clientConfig := plugin.ClientConfig(pluginMeta.Newest())
 
@@ -34,14 +116,14 @@ func getInstanceOfProvider(providerName string) *plugin.GRPCProvider {
 	rpcClient, err := pluginClient.Client()
 
 	if err != nil {
-		panic(fmt.Errorf("Failed to initialize plugin: %s", err))
+		return nil, fmt.Errorf("Failed to initialize plugin: %w", err)
 	}
 	// create a new resource provisioner.
 	raw, err := rpcClient.Dispense(plugin.ProviderPluginName)
 	if err != nil {
 		panic(fmt.Errorf("Failed to dispense plugin: %s", err))
 	}
-	return raw.(*plugin.GRPCProvider)
+	return raw.(*plugin.GRPCProvider), nil
 }
 
 func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBody string) (*cty.Value, error) {

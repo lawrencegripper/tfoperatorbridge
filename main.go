@@ -10,16 +10,21 @@ import (
 )
 
 func main() {
-	provider := getInstanceOfProvider("azurerm")
-
-	// Example talking to the Azure resources using the provider
 	log := ctrl.Log.WithName("main")
-	err := configureProvider(log, provider)
+
+	// Get a provider instance by installing or using existing binary
+	provider, err := SetupProvider()
 	if err != nil {
 		panic(err)
 	}
 
-	// Example creating CRDs in K8s with correct structure based on TF Schemas
+	// Configure the provider instance so it's good to use
+	err = configureProvider(log, provider)
+	if err != nil {
+		panic(err)
+	}
+
+	// Creating CRDs in K8s with correct structure based on TF Schemas
 	resources, schemas, err := createK8sCRDsFromTerraformProvider(provider)
 	if err != nil {
 		panic(err)
