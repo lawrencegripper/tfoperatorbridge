@@ -26,7 +26,7 @@ integration-tests: run
 	./scripts/wait-for-bridge.sh
 	@echo "==> Attempting to sourcing .env file"
 	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
-	ginkgo  -v
+	go test -v ./...
 
 lint: lint-go lint-shell
 	

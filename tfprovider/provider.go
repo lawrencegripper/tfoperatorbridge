@@ -50,7 +50,6 @@ func SetupProvider(log logr.Logger) (*plugin.GRPCProvider, error) {
 			return nil, fmt.Errorf("failed getting provider instance %w", err)
 		}
 	} else {
-
 		// If only the provider name and version are provided we'll install TF and use
 		// `terraform init` to install the provider from hashicorp registry
 		log.Info("Downloading provider binary")
@@ -58,7 +57,7 @@ func SetupProvider(log logr.Logger) (*plugin.GRPCProvider, error) {
 		if versionFromEnv == "" {
 			return nil, fmt.Errorf("Env %q not set and is required when path to provider binary isn't set with %q", providerVerionEnv, providerPathEnv)
 		}
-		path, err := installProvider(providerName, providerVerionEnv)
+		path, err := installProvider(providerName, versionFromEnv)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to setup provider as provider install failed: %w", err)
 		}
