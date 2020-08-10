@@ -230,22 +230,16 @@ func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unst
 		return nil, err
 	}
 	if gotTfState {
-		var stateBytes []byte
-		if r.cipher != nil {
-			decodedState, err := base64.StdEncoding.DecodeString(tfStateString)
-			if err != nil {
-				return nil, fmt.Errorf("Error decoding terraform state: %+v", err)
-			}
-			decryptedState, err := r.cipher.Decrypt(string(decodedState))
-			if err != nil {
-				return nil, fmt.Errorf("Error decrypting terraform state: %+v", err)
-			}
-			stateBytes = []byte(decryptedState)
-		} else {
-			stateBytes = []byte(tfStateString)
+		var stateString string
+		var decodedAndDecrypted bool
+		if stateString, decodedAndDecrypted, err = r.decodeAndDecryptString(tfStateString); err != nil {
+			return nil, fmt.Errorf("couldn't decode and decrypt terraform state: %+v", err)
 		}
-
-		unmashaledState, err := ctyjson.Unmarshal(stateBytes, schema.Block.ImpliedType())
+		if !decodedAndDecrypted {
+			// TODO: Handle failure to decrypt properly
+			log.Println("Warning, did not decrypt state")
+		}
+		unmashaledState, err := ctyjson.Unmarshal([]byte(stateString), schema.Block.ImpliedType())
 		if err != nil {
 			return nil, err
 		}
@@ -262,20 +256,17 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 	if err != nil {
 		return fmt.Errorf("Error marshaling state: %s", err)
 	}
-
-	var stateBytes []byte
-	if r.cipher != nil {
-		encryptedState, errEncrypt := r.cipher.Encrypt(string(serializedState))
-		if errEncrypt != nil {
-			return errEncrypt
-		}
-		encodedState := base64.StdEncoding.EncodeToString([]byte(encryptedState))
-		stateBytes = []byte(encodedState)
-	} else {
-		stateBytes = serializedState
+	var stateString string
+	var encodedAndEncrypted bool
+	if stateString, encodedAndEncrypted, err = r.encryptAndEncodeString(string(serializedState)); err != nil {
+		return fmt.Errorf("couldn't encode and encrypt terraform state: %+v", err)
+	}
+	if !encodedAndEncrypted {
+		// TODO: Handle failure to encrypt properly
+		log.Println("Warning, did not encrypt state")
 	}
 
-	err = unstructured.SetNestedField(resource.Object, string(stateBytes), "status", "_tfoperator", "tfState")
+	err = unstructured.SetNestedField(resource.Object, stateString, "status", "_tfoperator", "tfState")
 	if err != nil {
 		return fmt.Errorf("Error setting tfState property: %s", err)
 	}
@@ -666,6 +657,21 @@ func (r *TerraformReconciler) encryptAndEncodeString(plain string) (string, bool
 		return encoded, true, nil
 	}
 	return plain, false, nil
+}
+
+func (r *TerraformReconciler) decodeAndDecryptString(encoded string) (string, bool, error) {
+	if r.cipher != nil {
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return encoded, false, err
+		}
+		decrypted, err := r.cipher.Decrypt(string(decoded))
+		if err != nil {
+			return encoded, false, err
+		}
+		return decrypted, true, nil
+	}
+	return encoded, false, nil
 }
 
 // getOpenAPIValueFromTerraformValue gets a value respecting the openapi schema from a terraform value
