@@ -1,4 +1,4 @@
-package main
+package tfprovider
 
 import (
 	"context"
@@ -29,32 +29,47 @@ const (
 	providerPathEnv   = "TF_PROVIDER_PATH"
 )
 
-func SetupProvider() (*plugin.GRPCProvider, error) {
+// SetupProvider will return an instance of the TF Provider.
+// It will download [optional] and configure the provider before returning it.
+func SetupProvider(log logr.Logger) (*plugin.GRPCProvider, error) {
 	providerName := os.Getenv(providerNameEnv)
 	if providerName == "" {
 		return nil, fmt.Errorf("Env %q not set and is required", providerNameEnv)
 	}
 	pathFromEnv := os.Getenv(providerPathEnv)
 
+	var providerInstance *plugin.GRPCProvider
+	var err error
+
 	// Best route for serious use cases is to setup the provider binary as a volume mounted
 	// into the container.
 	if pathFromEnv != "" {
-		return getInstanceOfProvider(providerName, pathFromEnv)
+		log.Info("Getting provider instance using path")
+		providerInstance, err = getInstanceOfProvider(providerName, pathFromEnv)
+		if err != nil {
+			return nil, fmt.Errorf("failed getting provider instance %w", err)
+		}
+	} else {
+
+		// If only the provider name and version are provided we'll install TF and use
+		// `terraform init` to install the provider from hashicorp registry
+		log.Info("Downloading provider binary")
+		versionFromEnv := os.Getenv(providerVerionEnv)
+		if versionFromEnv == "" {
+			return nil, fmt.Errorf("Env %q not set and is required when path to provider binary isn't set with %q", providerVerionEnv, providerPathEnv)
+		}
+		path, err := installProvider(providerName, providerVerionEnv)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to setup provider as provider install failed: %w", err)
+		}
+
+		providerInstance, err = getInstanceOfProvider(providerName, path)
+		if err != nil {
+			return nil, fmt.Errorf("failed getting provider instance %w", err)
+		}
 	}
 
-	// If only the provider name and version are provided we'll install TF and use
-	// `terraform init` to install the provider from hashicorp registry
-	versionFromEnv := os.Getenv(providerVerionEnv)
-	if versionFromEnv == "" {
-		return nil, fmt.Errorf("Env %q not set and is required when path to provider binary isn't set with %q", providerVerionEnv, providerPathEnv)
-	}
-	path, err := installProvider(providerName, providerVerionEnv)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to setup provider as provider install failed: %w", err)
-	}
-
-	return getInstanceOfProvider(providerName, path)
-
+	return configureProvider(log, providerInstance)
 }
 
 func installProvider(name string, version string) (string, error) {
@@ -62,7 +77,7 @@ func installProvider(name string, version string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("Failed to create temp dir. %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer os.RemoveAll(tmpDir) //nolint: errcheck
 
 	execPath, err := tfinstall.Find(tfinstall.LatestVersion(tmpDir, false))
 	if err != nil {
@@ -70,6 +85,9 @@ func installProvider(name string, version string) (string, error) {
 	}
 
 	workingDir, err := ioutil.TempDir("", "tfproviders")
+	if err != nil {
+		return "", fmt.Errorf("Failed create tfprovider dir %w", err)
+	}
 
 	providerFileContent := fmt.Sprintf(`
 	provider "%s" {
@@ -160,10 +178,10 @@ func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBo
 	return &configFull, nil
 }
 
-func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) error {
+func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) (*plugin.GRPCProvider, error) {
 	configWithDefaults, err := createEmptyProviderConfWithDefaults(provider, "")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Now we have a prepared config we can configure the provider.
 	// Warning (again): Diagnostics houses errors, the typical go err pattern isn't followed - must check `resp.Diagnostics.Err()`
@@ -172,8 +190,8 @@ func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) error {
 	})
 	if err := configureProviderResp.Diagnostics.Err(); err != nil {
 		log.Error(err, fmt.Sprintf("Failed to configure provider: %s", err))
-		return err
+		return nil, err
 	}
 
-	return nil
+	return provider, nil
 }

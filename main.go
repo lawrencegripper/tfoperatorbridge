@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -13,13 +14,7 @@ func main() {
 	log := ctrl.Log.WithName("main")
 
 	// Get a provider instance by installing or using existing binary
-	provider, err := SetupProvider()
-	if err != nil {
-		panic(err)
-	}
-
-	// Configure the provider instance so it's good to use
-	err = configureProvider(log, provider)
+	provider, err := tfprovider.SetupProvider(log)
 	if err != nil {
 		panic(err)
 	}
