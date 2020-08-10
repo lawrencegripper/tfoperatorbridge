@@ -27,6 +27,7 @@ const (
 	providerNameEnv   = "TF_PROVIDER_NAME"
 	providerVerionEnv = "TF_PROVIDER_VERSION"
 	providerPathEnv   = "TF_PROVIDER_PATH"
+	tfVersion         = "0.12.29"
 )
 
 // SetupProvider will return an instance of the TF Provider.
@@ -78,7 +79,7 @@ func installProvider(name string, version string) (string, error) {
 	}
 	defer os.RemoveAll(tmpDir) //nolint: errcheck
 
-	execPath, err := tfinstall.Find(tfinstall.LatestVersion(tmpDir, false))
+	execPath, err := tfinstall.Find(tfinstall.ExactVersion(tfVersion, tmpDir))
 	if err != nil {
 		return "", fmt.Errorf("Failed to install Terraform %w", err)
 	}
@@ -91,7 +92,6 @@ func installProvider(name string, version string) (string, error) {
 	providerFileContent := fmt.Sprintf(`
 	provider "%s" {
 		version = "%s"
-		features {}
 	}
 	`, name, version)
 
