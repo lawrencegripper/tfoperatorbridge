@@ -32,6 +32,8 @@ Users should be able to deploy the bridge into their cluster with a provider sel
 1. Copy `.env-template` to `.env` and populate the fields with your SP/Subscription details
 1. `make run`
 
+> Warning: **Do not wrap values in `"`'s** in the `.env` file. These are imported by `Make` and adding quotes causes this to break. For example `TF_PROVIDER_PATH=./hack/.terraform/plugins/linux_amd64/` is correct.
+
 ## Config 
 
 - `ENABLE_PROVIDER_LOG` - Enable full provider logs

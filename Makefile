@@ -1,11 +1,14 @@
 DEV_CONTAINER_TAG:=devcontainer
 
+# Load the environment variables. If this errors review the README.MD and create a .env file as instructed
+include .env
+export
+
 build: lint
 	go build .
 
 run: kind-create terraform-hack-init
 	@echo "==> Attempting to sourcing .env file"
-	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
 	go run . &
 
 kind-create:
@@ -26,8 +29,6 @@ terraform-hack-init:
 #       these create resources in the azure account specified.
 integration-tests: run
 	./scripts/wait-for-bridge.sh
-	@echo "==> Attempting to sourcing .env file"
-	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
 	go test -v ./...
 
 lint: lint-go lint-shell
