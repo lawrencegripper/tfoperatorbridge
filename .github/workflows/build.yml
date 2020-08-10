@@ -25,5 +25,3 @@ jobs:
         ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
         ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
         TF_STATE_ENCRYPTION_KEY: ${{ secrets.TF_STATE_ENCRYPTION_KEY }}
-        TF_PROVIDER_NAME: "azurerm"
-        TF_PROVIDER_PATH: "./hack/.terraform/plugins/linux_amd64/"
