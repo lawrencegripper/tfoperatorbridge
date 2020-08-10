@@ -24,6 +24,8 @@ terraform-hack-init:
 
 integration-tests: run
 	./scripts/wait-for-bridge.sh
+	@echo "==> Attempting to sourcing .env file"
+	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
 	ginkgo  -v
 
 lint: lint-go lint-shell
