@@ -19,6 +19,11 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
+// TODO: Export from package after refactor
+const (
+	encryptionKeyEnvVar = "TF_STATE_ENCRYPTION_KEY"
+)
+
 var _ = Describe("Azure resource creation via CRD", func() {
 	Context("with respect to resource dependencies", func() {
 		randomString := RandomString(12)
@@ -310,7 +315,7 @@ func RandomString(n int) string {
 }
 
 func EncryptionKeyIsSet() bool {
-	if encryptionKey := os.Getenv("TF_STATE_ENCRYPTION_KEY"); encryptionKey == "" {
+	if encryptionKey := os.Getenv(encryptionKeyEnvVar); encryptionKey == "" {
 		return false
 	}
 	return true
