@@ -81,7 +81,13 @@ var _ = Describe("Azure resource creation via CRD", func() {
 
 				var js string
 				err = json.Unmarshal([]byte(tfStateString), &js)
-				Expect(err).ToNot(BeNil()) // Check state is encrypted as it's not valid JSON
+				Expect(err).ToNot(BeNil(), "status._tfoperator.tfState property should be encrypted and not valid JSON")
+
+				Expect(len(tfStateString)).ToNot(Equal(0))
+				_, err = base64.StdEncoding.DecodeString(tfStateString)
+				Expect(err).To(BeNil(), "status._tfoperator.tfState should be base64 encoded")
+				// TODO: Once refactored to use packages and the decryption function is exported
+				// we can validate that this data is encrypted with the encryption key.
 			}, 30)
 		})
 		When("creating an azure storage account CRD", func() {
@@ -146,13 +152,19 @@ var _ = Describe("Azure resource creation via CRD", func() {
 					Skip("encryption key is not set, skipping test")
 				}
 
-				// If base64 encoded, assume we have encrypted the value as well
+				// After we encrypt data, we then base64 encode it before writing
+				// it to the CRD. Therefore, we check whether the data is encoded
+				// and not plaintext as a proxy for encryption being applied.
+				// This requires the plaintext value to not be an already base64
+				// encoded value such as an access key.
 				var ok bool
-				primaryAccessKey, ok := status["primary_access_key"].(string)
-				Expect(ok).To(BeTrue(), "CRD should have a primary_access_key property")
-				var err error
-				_, err = base64.StdEncoding.DecodeString(primaryAccessKey)
-				Expect(err).To(BeNil(), "status.primary_access_key should be base64 encoded and encrypted")
+				primaryBlobConnectionString, ok := status["primary_blob_connection_string"].(string)
+				Expect(ok).To(BeTrue(), "CRD should have a primary_blob_connection_string property")
+				Expect(len(primaryBlobConnectionString)).ToNot(Equal(0), "status.primary_blob_connection_string should not be empty")
+				_, err := base64.StdEncoding.DecodeString(primaryBlobConnectionString)
+				Expect(err).To(BeNil(), "status.primary_blob_connection_string should be base64 encoded")
+				// TODO: Once refactored to use packages and the decryption function is exported
+				// we can validate that this data is encrypted with the encryption key.
 			}, 30)
 			It("should have a tags property on the azure storage account resource in azure", func() {
 				Expect(storageAccountResource.Tags).ToNot(BeNil())
