@@ -22,6 +22,8 @@ kill-tfbridge: kind-delete
 terraform-hack-init:
 	./hack/init.sh
 
+# Note: The integration tests run a set of scenarios with the azurerm provider
+#       these create resources in the azure account specified.
 integration-tests: run
 	./scripts/wait-for-bridge.sh
 	@echo "==> Attempting to sourcing .env file"
