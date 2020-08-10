@@ -8,8 +8,10 @@ build: lint
 	go build .
 
 run: kind-create terraform-hack-init
-	@echo "==> Attempting to sourcing .env file"
-	go run . &
+	# Stop any previously running instance of the operator
+	$(shell [ -f run.pid ] && cat run.pid | xargs kill)
+	# Store the pid of the running instance in run.pid file
+	go run . & echo "$$$$" > run.pid
 
 kind-create:
 	@echo "Create cluster if doesn't exist"
