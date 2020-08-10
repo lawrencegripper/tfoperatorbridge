@@ -36,22 +36,18 @@ func SetupProvider() (*plugin.GRPCProvider, error) {
 	}
 	pathFromEnv := os.Getenv(providerPathEnv)
 
-	// Best route for serious use cases is to provider the provider binary as a volume mounted
+	// Best route for serious use cases is to setup the provider binary as a volume mounted
 	// into the container.
-	//
-	// If a path is set then the user has decided to so this so
-	// we will skip the TF init stage and directly use the provider binary on the path provided
 	if pathFromEnv != "" {
 		return getInstanceOfProvider(providerName, pathFromEnv)
 	}
 
+	// If only the provider name and version are provided we'll install TF and use
+	// `terraform init` to install the provider from hashicorp registry
 	versionFromEnv := os.Getenv(providerVerionEnv)
 	if versionFromEnv == "" {
 		return nil, fmt.Errorf("Env %q not set and is required when path to provider binary isn't set with %q", providerVerionEnv, providerPathEnv)
 	}
-
-	// If only the provider name and version are provided we'll install TF and use
-	// `terraform init` to install the provider from hashicorp registry
 	path, err := installProvider(providerName, providerVerionEnv)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to setup provider as provider install failed: %w", err)

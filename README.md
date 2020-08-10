@@ -37,6 +37,12 @@ Users should be able to deploy the bridge into their cluster with a provider sel
 - `ENABLE_PROVIDER_LOG` - Enable full provider logs
 - `SKIP_CRD_CREATION`   - Skip CRD creation at startup
 
+You can configure which terraform provider is used by the operator in two ways. The provider is automatically downloaded if `TF_PROVIDER_NAME` and `TF_PROVIDER_VERSION` are set or is pulled from an existing location on disk if `TF_PROVIDER_NAME` and `TF_PROVIDER_PATH` are set.
+
+- `TF_PROVIDER_NAME`    - Terraform provider you'd like to use. eg `azurerm`
+- `TF_PROVIDER_VERSION` - Version of the terraform provider. eg `2.20.0`
+- `TF_PROVIDER_PATH`    - Path on disk to the binary of the provider. eg "/providers/here". This folder must contain a provider binary in the format `terraform-provider-azurerm_v2.22`
+
 ## Provider Config
 
 There are two ways to configure the provider used by the operator. 
