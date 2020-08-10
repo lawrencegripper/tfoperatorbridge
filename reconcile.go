@@ -656,13 +656,14 @@ func getTerraformAttributeOrNestedBlockFromBlock(key string, block *configschema
 	return nil, nil
 }
 
-func (r *TerraformReconciler) encryptString(plain string) (string, bool, error) {
+func (r *TerraformReconciler) encryptAndEncodeString(plain string) (string, bool, error) {
 	if r.cipher != nil {
 		encrypted, err := r.cipher.Encrypt(plain)
 		if err != nil {
 			return plain, false, err
 		}
-		return encrypted, true, nil
+		encoded := base64.StdEncoding.EncodeToString([]byte(encrypted))
+		return encoded, true, nil
 	}
 	return plain, false, nil
 }
@@ -697,11 +698,11 @@ func (r *TerraformReconciler) getOpenAPIValueFromTerraformValue(terraformKey str
 		var err error
 		s := terraformValue.AsString()
 		if sensitive {
-			var encrypted bool
-			if s, encrypted, err = r.encryptString(s); err != nil {
+			var b64AndEncrypted bool
+			if s, b64AndEncrypted, err = r.encryptAndEncodeString(s); err != nil {
 				return nil, err
 			}
-			if !encrypted {
+			if !b64AndEncrypted {
 				// TODO: Handle failure to encrypt properly
 				log.Printf("Warning, did not encrypt sensitve value %s", terraformKey)
 			}
