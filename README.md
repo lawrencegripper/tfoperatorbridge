@@ -36,8 +36,9 @@ Users should be able to deploy the bridge into their cluster with a provider sel
 
 ## Config 
 
-- `ENABLE_PROVIDER_LOG` - Enable full provider logs
-- `SKIP_CRD_CREATION`   - Skip CRD creation at startup
+- `ENABLE_PROVIDER_LOG`     - Enable full provider logs
+- `SKIP_CRD_CREATION`       - Skip CRD creation at startup
+- `TF_STATE_ENCRYPTION_KEY` - Encryption key used to encrypt TF State stored on the CRD
 
 You can configure which terraform provider is used by the operator in two ways. The provider is automatically downloaded if `TF_PROVIDER_NAME` and `TF_PROVIDER_VERSION` are set or is pulled from an existing location on disk if `TF_PROVIDER_NAME` and `TF_PROVIDER_PATH` are set.
 
