@@ -4,22 +4,22 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 func main() {
-	provider := getInstanceOfProvider("azurerm")
-
-	// Example talking to the Azure resources using the provider
 	log := ctrl.Log.WithName("main")
-	err := configureProvider(log, provider)
+
+	// Get a provider instance by installing or using existing binary
+	provider, err := tfprovider.SetupProvider(log)
 	if err != nil {
 		panic(err)
 	}
 
-	// Example creating CRDs in K8s with correct structure based on TF Schemas
+	// Creating CRDs in K8s with correct structure based on TF Schemas
 	resources, schemas, err := createK8sCRDsFromTerraformProvider(provider)
 	if err != nil {
 		panic(err)
