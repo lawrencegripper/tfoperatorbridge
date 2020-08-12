@@ -3,6 +3,8 @@ name: build
 on:
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ main ]
 
 jobs:  
   build:
@@ -12,7 +14,8 @@ jobs:
     - uses: actions/checkout@v2
     
     - name: Build devcontainer
-      run: make devcontainer
+      # A .env file is required otherwise make would fail.
+      run: touch .env && make devcontainer
 
     - name: Run CI
       run: make devcontainer-ci

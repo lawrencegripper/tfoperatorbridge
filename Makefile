@@ -1,12 +1,17 @@
 DEV_CONTAINER_TAG:=devcontainer
 
+# Load the environment variables. If this errors review the README.MD and create a .env file as instructed
+include .env
+export
+
 build: lint
 	go build .
 
 run: kind-create terraform-hack-init
-	@echo "==> Attempting to sourcing .env file"
-	if [ -f .env ]; then set -o allexport; . ./.env; set +o allexport; fi; \
-	go run . &
+	# Stop any previously running instance of the operator
+	$(shell [ -f run.pid ] && cat run.pid | xargs kill)
+	# Store the pid of the running instance in run.pid file
+	go run . & echo "$$$$" > run.pid
 
 kind-create:
 	@echo "Create cluster if doesn't exist"
@@ -22,9 +27,11 @@ kill-tfbridge: kind-delete
 terraform-hack-init:
 	./hack/init.sh
 
+# Note: The integration tests run a set of scenarios with the azurerm provider
+#       these create resources in the azure account specified.
 integration-tests: run
 	./scripts/wait-for-bridge.sh
-	ginkgo  -v
+	go test -v ./...
 
 lint: lint-go lint-shell
 	
@@ -76,6 +83,8 @@ endif
 		-e ARM_TENANT_ID="$(ARM_TENANT_ID)" \
 		-e PROVIDER_CONFIG_HCL="features {}" \
 		-e TF_STATE_ENCRYPTION_KEY="$(TF_STATE_ENCRYPTION_KEY)" \
+		-e TF_PROVIDER_NAME=azurerm \
+		-e TF_PROVIDER_PATH="./hack/.terraform/plugins/linux_amd64/" \
 		--privileged \
 		--device /dev/fuse \
 		--network=host \
