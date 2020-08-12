@@ -4,26 +4,32 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	openapi_spec "github.com/go-openapi/spec"
+
 	"github.com/hashicorp/terraform/plugin"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	api "sigs.k8s.io/controller-runtime/examples/crd/pkg"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
 var (
-	setupLog = ctrl.Log.WithName("setup")
-	recLog   = ctrl.Log.WithName("reconciler")
+	setupLog    = ctrl.Log.WithName("setup")
+	validateLog = ctrl.Log.WithName("setup")
+	recLog      = ctrl.Log.WithName("reconciler")
 )
 
 const (
@@ -75,12 +81,6 @@ func (r *controller) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	return ctrl.Result{RequeueAfter: time.Minute * 15}, nil
 }
 
-func runtimeObjFromGVK(r schema.GroupVersionKind) runtime.Object {
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(r)
-	return obj
-}
-
 func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVersionFull, schemas []openapi_spec.Schema) {
 	ctrl.SetLogger(zap.Logger(true))
 
@@ -107,10 +107,13 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 		setupLog.Info("Enabling controller for resource", "kind", gv.GroupVersionKind.Kind)
 		client := mgr.GetClient()
 		schema := schemas[i] // TODO: Assumes schema and resources have the same index, make more reboust
+
+		validatableRuntimeObj := validatedUnstructuredFromGVK(gv.GroupVersionKind, provider)
+
 		err = ctrl.NewControllerManagedBy(mgr).
 			// Note: Generation Changed Predicate means controller only called when an update is made to spec
 			// or other case causing generation to change
-			For(runtimeObjFromGVK(gv.GroupVersionKind), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			For(validatableRuntimeObj, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 			Complete(&controller{
 				Client:       client,
 				tfReconciler: NewTerraformReconciler(provider, client, schema, opts...),
@@ -121,20 +124,70 @@ func setupControllerRuntime(provider *plugin.GRPCProvider, resources []GroupVers
 			setupLog.Error(err, "unable to create controller", "kind", gv.GroupVersionKind.Kind)
 			os.Exit(1)
 		}
-	}
 
-	// Todo: Enable webhooks in future
-	// err = ctrl.NewWebhookManagedBy(mgr).
-	// 	For(&api.ChaosPod{}).
-	// 	Complete()
-	// if err != nil {
-	// 	setupLog.Error(err, "unable to create webhook")
-	// 	os.Exit(1)
-	// }
+		// Enable validating Webook
+		err = ctrl.NewWebhookManagedBy(mgr).
+			For(validatableRuntimeObj).
+			Complete()
+		if err != nil {
+			setupLog.Error(err, "unable to create webhook")
+			os.Exit(1)
+		}
+	}
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func validatedUnstructuredFromGVK(gvk schema.GroupVersionKind, provider *plugin.GRPCProvider) runtime.Object {
+	unstructInstance := &unstructured.Unstructured{}
+	unstructInstance.SetGroupVersionKind(gvk)
+
+	// Todo duplicated in reconciler code. Refactor into shared helpers at some point maybe.
+	resourceName := "azurerm_" + strings.Replace(gvk.Kind, "-", "_", -1)
+
+	return &validatedUnstructured{
+		Unstructured:   unstructInstance,
+		tfResourceName: resourceName,
+	}
+}
+
+var _ webhook.Validator = &validatedUnstructured{}
+
+type validatedUnstructured struct {
+	*unstructured.Unstructured
+	tfResourceName string
+	tfprovider     *plugin.GRPCProvider
+}
+
+// ValidateCreate implements webhookutil.validator so a webhook will be registered for the type
+func (c *validatedUnstructured) ValidateCreate() error {
+	validateLog.Info("validate create", "name", c.GetName())
+
+	// Todo: Call validate on provider
+	// c.tfprovider.ValidateResourceTypeConfig(
+	_ = c.tfprovider
+
+	return nil
+}
+
+// ValidateUpdate implements webhookutil.validator so a webhook will be registered for the type
+func (c *validatedUnstructured) ValidateUpdate(old runtime.Object) error {
+	validateLog.Info("validate update", "name", c.GetName())
+
+	// Todo: Call validate on provider
+
+	return nil
+}
+
+// ValidateDelete implements webhookutil.validator so a webhook will be registered for the type
+func (c *validatedUnstructured) ValidateDelete() error {
+	validateLog.Info("validate delete", "name", c.GetName())
+
+	// Todo: Call validate on provider
+
+	return nil
 }
