@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"os"
 	"time"
@@ -387,14 +388,21 @@ func k8sClientWithDefaults(res schema.GroupVersionResource) dynamic.ResourceInte
 }
 
 func GetAzureResourceGroup(ctx context.Context, resourceGroupName string) (resources.Group, error) {
-	return azureResourceGroupsClient.Get(
+
+	res, err := azureResourceGroupsClient.Get(
 		ctx,
 		resourceGroupName,
 	)
+	// Wrap the error to avoid sensitive details in build/logs
+	if err != nil {
+		return res, fmt.Errorf("failed getting resourcegroup: %s", err.Error())
+	}
+
+	return res, err
 }
 
 func GetAzureResource(ctx context.Context, resourceGroupName, resourceProvider, resourceType, resourceName, apiVersion string) (resources.GenericResource, error) {
-	return azureResourcesClient.Get(
+	res, err := azureResourcesClient.Get(
 		ctx,
 		resourceGroupName,
 		resourceProvider,
@@ -403,4 +411,11 @@ func GetAzureResource(ctx context.Context, resourceGroupName, resourceProvider, 
 		resourceName,
 		apiVersion,
 	)
+
+	// Wrap the error to avoid sensitive details in build/logs
+	if err != nil {
+		return res, fmt.Errorf("failed getting resource: %s", err.Error())
+	}
+
+	return res, err
 }
