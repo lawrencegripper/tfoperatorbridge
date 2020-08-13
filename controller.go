@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -19,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 var (
@@ -132,9 +135,31 @@ func setupControllerRuntime(provider *tfprovider.TerraformProvider, resources []
 	// 	os.Exit(1)
 	// }
 
+	hookServer := mgr.GetWebhookServer()
+	hookServer.CertDir = "./certs"
+	hookServer.Register("/validate-tf-crd", &webhook.Admission{Handler: &tfCRDValidator{}})
+
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// tfCRDValidator validates Pods
+type tfCRDValidator struct {
+	Client  client.Client
+	decoder *admission.Decoder
+}
+
+// podValidator admits a pod iff a specific annotation exists.
+func (v *tfCRDValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
+	resource := unstructured.Unstructured{}
+	err := resource.UnmarshalJSON(req.Object.Raw)
+
+	if err != nil {
+		return admission.Errored(http.StatusBadRequest, err)
+	}
+
+	return admission.Allowed("")
 }

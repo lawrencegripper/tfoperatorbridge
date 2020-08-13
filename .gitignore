@@ -38,3 +38,4 @@ __debug_bin
 .env
 
 run.pid
+/certs

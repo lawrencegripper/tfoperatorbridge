@@ -8,6 +8,7 @@ build: lint
 	go build .
 
 run: kind-create terraform-hack-init
+	./scripts/gen-certs.sh
 	# Stop any previously running instance of the operator
 	$(shell [ -f run.pid ] && cat run.pid | xargs kill)
 	# Store the pid of the running instance in run.pid file
