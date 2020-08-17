@@ -12,7 +12,7 @@ import (
 	openapi_spec "github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
 	terraform_schema "github.com/hashicorp/terraform/configs/configschema"
-	terraform_plugin "github.com/hashicorp/terraform/plugin"
+	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
 	"github.com/zclconf/go-cty/cty"
 
 	k8s_apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
@@ -28,10 +28,10 @@ const (
 	openAPIArrayType  = "array"
 )
 
-func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPCProvider) ([]GroupVersionFull, []openapi_spec.Schema, error) {
+func createK8sCRDsFromTerraformProvider(terraformProvider *tfprovider.TerraformProvider) ([]GroupVersionFull, []openapi_spec.Schema, error) {
 	// Status: This runs but very little validation of the outputted openAPI apecs has been done. Bugs are likely
 
-	terraformProviderSchema := terraformProvider.GetSchema()
+	terraformProviderSchema := terraformProvider.Plugin.GetSchema()
 
 	// Each resource in the terraform providers becomes a OpenAPI schema stored in this array
 	openAPIResourceSchemas := []openapi_spec.Schema{}
@@ -72,9 +72,12 @@ func createK8sCRDsFromTerraformProvider(terraformProvider *terraform_plugin.GRPC
 			SchemaProps: openapi_spec.SchemaProps{
 				Type: []string{openAPIObjectType},
 				Properties: map[string]openapi_spec.Schema{
-					"provisioningState":     *openapi_spec.StringProperty(),
-					"tfState":               *openapi_spec.StringProperty(),
-					"lastAppliedGeneration": *openapi_spec.StringProperty(),
+					"provisioningState":        *openapi_spec.StringProperty(),
+					"tfState":                  *openapi_spec.StringProperty(),
+					"lastAppliedGeneration":    *openapi_spec.StringProperty(),
+					"tfProviderName":           *openapi_spec.StringProperty(),
+					"tfProviderVersion":        *openapi_spec.StringProperty(),
+					"tfProviderChecksumSHA256": *openapi_spec.StringProperty(),
 				},
 			},
 		}

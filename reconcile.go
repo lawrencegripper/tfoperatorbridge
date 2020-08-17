@@ -14,8 +14,8 @@ import (
 	"github.com/go-logr/logr"
 	openapi_spec "github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
-	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
+	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
@@ -38,14 +38,14 @@ func WithAesEncryption(encryptionKey string) TerraformReconcilerOption {
 
 // TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
 type TerraformReconciler struct {
-	provider      *plugin.GRPCProvider
+	provider      *tfprovider.TerraformProvider
 	client        client.Client
 	cipher        TerraformStateCipher
 	openAPISchema openapi_spec.Schema
 }
 
 // NewTerraformReconciler creates a terraform reconciler
-func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client, schema openapi_spec.Schema, opts ...TerraformReconcilerOption) *TerraformReconciler {
+func NewTerraformReconciler(provider *tfprovider.TerraformProvider, client client.Client, schema openapi_spec.Schema, opts ...TerraformReconcilerOption) *TerraformReconciler {
 	r := &TerraformReconciler{
 		provider:      provider,
 		client:        client,
@@ -80,7 +80,7 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 	// Get the kinds terraform schema
 	kind := crd.GetKind()
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
-	schema := r.provider.GetSchema().ResourceTypes[resourceName]
+	schema := r.provider.Plugin.GetSchema().ResourceTypes[resourceName]
 
 	var terraformConfig *cty.Value
 	var deleting bool
@@ -91,6 +91,10 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 	} else {
 		if err := r.ensureFinalizer(ctx, log, crd); err != nil {
 			return reconcileLogError(log, fmt.Errorf("Error adding finalizer: %s", err))
+		}
+
+		if err := r.ensureTerraformProviderMetadata(crd); err != nil {
+			return reconcileLogError(log, fmt.Errorf("Error adding terraform provider metadata: %s", err))
 		}
 
 		// Get the spec from the CRD
@@ -273,6 +277,33 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 
 	if err := r.client.Status().Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
 		return fmt.Errorf("Error saving tfState: %s", err)
+	}
+	return nil
+}
+
+func (r *TerraformReconciler) ensureTerraformProviderMetadata(resource *unstructured.Unstructured) error {
+	if err := r.ensureTerraformProviderMetadataValue(resource, "tfProviderName", r.provider.Metadata.Name); err != nil {
+		return err
+	}
+	if err := r.ensureTerraformProviderMetadataValue(resource, "tfProviderVersion", r.provider.Metadata.Version); err != nil {
+		return err
+	}
+	if err := r.ensureTerraformProviderMetadataValue(resource, "tfProviderBinaryChecksumSHA256", r.provider.Metadata.ChecksumSHA256); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *TerraformReconciler) ensureTerraformProviderMetadataValue(resource *unstructured.Unstructured, key, value string) error {
+	_, got, err := unstructured.NestedString(resource.Object, "status", "_tfoperator", key)
+	if err != nil {
+		return fmt.Errorf("Error getting tfProviderName field: %s", err)
+	}
+	if !got {
+		err := unstructured.SetNestedField(resource.Object, value, "status", "_tfoperator", key)
+		if err != nil {
+			return fmt.Errorf("Error setting tfProviderName property: %s", err)
+		}
 	}
 	return nil
 }
@@ -884,7 +915,7 @@ func (r *TerraformReconciler) mapTerraformValuesToCRDStatus(schema providers.Sch
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
-	planResponse := r.provider.PlanResourceChange(providers.PlanResourceChangeRequest{
+	planResponse := r.provider.Plugin.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
 		PriorState:       *state, // State after last apply or empty if non-existent
 		ProposedNewState: config, // Config from CRD representing desired state
@@ -896,7 +927,7 @@ func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty
 		return nil, fmt.Errorf("Failed in Terraform Plan: %s", err)
 	}
 
-	applyResponse := r.provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
+	applyResponse := r.provider.Plugin.ApplyResourceChange(providers.ApplyResourceChangeRequest{
 		TypeName:     resourceName,              // Working theory:
 		PriorState:   *state,                    // This is the state from the .tfstate file before the apply is made
 		Config:       config,                    // The current HCL configuration or what would be in your terraform file
