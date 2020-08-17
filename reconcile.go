@@ -93,10 +93,6 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 			return reconcileLogError(log, fmt.Errorf("Error adding finalizer: %s", err))
 		}
 
-		if err := r.ensureTerraformProviderMetadata(crd); err != nil {
-			return reconcileLogError(log, fmt.Errorf("Error adding terraform provider metadata: %s", err))
-		}
-
 		// Get the spec from the CRD
 		spec, gotSpec, err := unstructured.NestedMap(crd.Object, "spec")
 		if err != nil {
@@ -149,6 +145,10 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 	crdPreStateChanges := crd.DeepCopy()
 	if err = r.setLastAppliedGeneration(crd); err != nil {
 		return reconcileLogError(log, fmt.Errorf("Error saving last generation applied: %s", err))
+	}
+
+	if err := r.ensureTerraformProviderMetadata(crd); err != nil {
+		return reconcileLogError(log, fmt.Errorf("Error adding terraform provider metadata: %s", err))
 	}
 
 	if deleting {
@@ -288,7 +288,7 @@ func (r *TerraformReconciler) ensureTerraformProviderMetadata(resource *unstruct
 	if err := r.ensureTerraformProviderMetadataValue(resource, "tfProviderVersion", r.provider.Metadata.Version); err != nil {
 		return err
 	}
-	if err := r.ensureTerraformProviderMetadataValue(resource, "tfProviderBinaryChecksumSHA256", r.provider.Metadata.ChecksumSHA256); err != nil {
+	if err := r.ensureTerraformProviderMetadataValue(resource, "tfProviderChecksumSHA256", r.provider.Metadata.ChecksumSHA256); err != nil {
 		return err
 	}
 	return nil
@@ -297,12 +297,12 @@ func (r *TerraformReconciler) ensureTerraformProviderMetadata(resource *unstruct
 func (r *TerraformReconciler) ensureTerraformProviderMetadataValue(resource *unstructured.Unstructured, key, value string) error {
 	_, got, err := unstructured.NestedString(resource.Object, "status", "_tfoperator", key)
 	if err != nil {
-		return fmt.Errorf("Error getting tfProviderName field: %s", err)
+		return fmt.Errorf("Error getting %s field: %s", key, err)
 	}
 	if !got {
 		err := unstructured.SetNestedField(resource.Object, value, "status", "_tfoperator", key)
 		if err != nil {
-			return fmt.Errorf("Error setting tfProviderName property: %s", err)
+			return fmt.Errorf("Error setting %s property: %s", key, err)
 		}
 	}
 	return nil
