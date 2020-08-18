@@ -94,19 +94,19 @@ var _ = Describe("Azure resource creation via CRD", func() {
 				tfProviderName, gotTfProviderName, err := unstructured.NestedString(azureResourceGroupCRDResponse.Object, "status", "_tfoperator", "providerName")
 				Expect(err).To(BeNil())
 				Expect(gotTfProviderName).To(BeTrue(), "CRD should have status._tfoperator.providerName property")
-				Expect(len(tfProviderName)).ToNot(Equal(0))
+				Expect(tfProviderName).To(Equal("azurerm"))
 			}, 30)
 			It("should store the terraform provider version", func() {
 				tfVersionName, gotTfVersionName, err := unstructured.NestedString(azureResourceGroupCRDResponse.Object, "status", "_tfoperator", "providerVersion")
 				Expect(err).To(BeNil())
 				Expect(gotTfVersionName).To(BeTrue(), "CRD should have status._tfoperator.providerVersion property")
-				Expect(len(tfVersionName)).ToNot(Equal(0))
+				Expect(len(tfVersionName)).To(Equal("2.22.0"))
 			}, 30)
 			It("should store the terraform provider checksum", func() {
 				tfChecksumSHA256, gotTfChecksumSHA256, err := unstructured.NestedString(azureResourceGroupCRDResponse.Object, "status", "_tfoperator", "providerChecksumSHA256")
 				Expect(err).To(BeNil())
 				Expect(gotTfChecksumSHA256).To(BeTrue(), "CRD should have status._tfoperator.providerChecksumSHA256 property")
-				Expect(len(tfChecksumSHA256)).ToNot(Equal(0))
+				Expect(len(tfChecksumSHA256)).To(Equal("c96318798eca449bfb1fe7ca0017ac9a9f719ed969fbfdd87032da4874e5a5a6"))
 			}, 30)
 		})
 		When("creating an azure storage account CRD", func() {
