@@ -29,6 +29,7 @@ import (
 const (
 	crdStatusKeyName                       = "status"
 	crdStatusTerraformOperatorKeyName      = "_tfoperator"
+	crdStatusTerraformStateKeyName         = "tfState"
 	crdStatusLastAppliedGenerationKeyName  = "lastAppliedGeneration"
 	crdStatusProvisioningStateKeyName      = "provisioningState"
 	crdStatusProviderNameKeyName           = "providerName"
@@ -239,7 +240,7 @@ func (r *TerraformReconciler) removeFinalizerAndSave(ctx context.Context, log lo
 }
 
 func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unstructured, schema providers.Schema) (*cty.Value, error) {
-	tfStateString, gotTfState, err := unstructured.NestedString(resource.Object, crdStatusKeyName, crdStatusTerraformOperatorKeyName, "tfState")
+	tfStateString, gotTfState, err := unstructured.NestedString(resource.Object, crdStatusKeyName, crdStatusTerraformOperatorKeyName, crdStatusTerraformStateKeyName)
 	if err != nil {
 		return nil, err
 	}
@@ -280,13 +281,13 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 		log.Println("Warning, did not encrypt state")
 	}
 
-	err = unstructured.SetNestedField(resource.Object, stateString, crdStatusKeyName, crdStatusTerraformOperatorKeyName, "tfState")
+	err = unstructured.SetNestedField(resource.Object, stateString, crdStatusKeyName, crdStatusTerraformOperatorKeyName, crdStatusTerraformStateKeyName)
 	if err != nil {
-		return fmt.Errorf("Error setting tfState property: %s", err)
+		return fmt.Errorf("Error setting %s property: %s", crdStatusTerraformStateKeyName, err)
 	}
 
 	if err := r.client.Status().Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
-		return fmt.Errorf("Error saving tfState: %s", err)
+		return fmt.Errorf("Error saving %s: %s", crdStatusTerraformStateKeyName, err)
 	}
 	return nil
 }

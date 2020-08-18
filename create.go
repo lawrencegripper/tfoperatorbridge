@@ -68,16 +68,16 @@ func createK8sCRDsFromTerraformProvider(terraformProvider *tfprovider.TerraformP
 		}
 
 		// Add terraform operator property to store useful metadata used by the operator
-		statusOpenAPISchema.Properties["_tfoperator"] = openapi_spec.Schema{
+		statusOpenAPISchema.Properties[crdStatusTerraformOperatorKeyName] = openapi_spec.Schema{
 			SchemaProps: openapi_spec.SchemaProps{
 				Type: []string{openAPIObjectType},
 				Properties: map[string]openapi_spec.Schema{
-					"provisioningState":        *openapi_spec.StringProperty(),
-					"tfState":                  *openapi_spec.StringProperty(),
-					"lastAppliedGeneration":    *openapi_spec.StringProperty(),
-					"tfProviderName":           *openapi_spec.StringProperty(),
-					"tfProviderVersion":        *openapi_spec.StringProperty(),
-					"tfProviderChecksumSHA256": *openapi_spec.StringProperty(),
+					crdStatusProvisioningStateKeyName:      *openapi_spec.StringProperty(),
+					crdStatusTerraformStateKeyName:         *openapi_spec.StringProperty(),
+					crdStatusLastAppliedGenerationKeyName:  *openapi_spec.StringProperty(),
+					crdStatusProviderNameKeyName:           *openapi_spec.StringProperty(),
+					crdStatusProviderVersionKeyName:        *openapi_spec.StringProperty(),
+					crdStatusProviderChecksumSHA256KeyName: *openapi_spec.StringProperty(),
 				},
 			},
 		}
