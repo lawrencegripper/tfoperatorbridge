@@ -14,8 +14,8 @@ import (
 	"github.com/go-logr/logr"
 	openapi_spec "github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
-	"github.com/hashicorp/terraform/plugin"
 	"github.com/hashicorp/terraform/providers"
+	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
@@ -24,6 +24,17 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	crdStatusKeyName                       = "status"
+	crdStatusTerraformOperatorKeyName      = "_tfoperator"
+	crdStatusTerraformStateKeyName         = "tfState"
+	crdStatusLastAppliedGenerationKeyName  = "lastAppliedGeneration"
+	crdStatusProvisioningStateKeyName      = "provisioningState"
+	crdStatusProviderNameKeyName           = "providerName"
+	crdStatusProviderVersionKeyName        = "providerVersion"
+	crdStatusProviderChecksumSHA256KeyName = "providerChecksumSHA256"
 )
 
 // TerraformReconcilerOption is modifying function to add functionality to the TerraformReconciler struct
@@ -38,14 +49,14 @@ func WithAesEncryption(encryptionKey string) TerraformReconcilerOption {
 
 // TerraformReconciler is a reconciler that processes CRD changes uses the configured Terraform provider
 type TerraformReconciler struct {
-	provider      *plugin.GRPCProvider
+	provider      *tfprovider.TerraformProvider
 	client        client.Client
 	cipher        TerraformStateCipher
 	openAPISchema openapi_spec.Schema
 }
 
 // NewTerraformReconciler creates a terraform reconciler
-func NewTerraformReconciler(provider *plugin.GRPCProvider, client client.Client, schema openapi_spec.Schema, opts ...TerraformReconcilerOption) *TerraformReconciler {
+func NewTerraformReconciler(provider *tfprovider.TerraformProvider, client client.Client, schema openapi_spec.Schema, opts ...TerraformReconcilerOption) *TerraformReconciler {
 	r := &TerraformReconciler{
 		provider:      provider,
 		client:        client,
@@ -80,7 +91,7 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 	// Get the kinds terraform schema
 	kind := crd.GetKind()
 	resourceName := "azurerm_" + strings.Replace(kind, "-", "_", -1)
-	schema := r.provider.GetSchema().ResourceTypes[resourceName]
+	schema := r.provider.Plugin.GetSchema().ResourceTypes[resourceName]
 
 	var terraformConfig *cty.Value
 	var deleting bool
@@ -145,6 +156,10 @@ func (r *TerraformReconciler) Reconcile(ctx context.Context, log logr.Logger, cr
 	crdPreStateChanges := crd.DeepCopy()
 	if err = r.setLastAppliedGeneration(crd); err != nil {
 		return reconcileLogError(log, fmt.Errorf("Error saving last generation applied: %s", err))
+	}
+
+	if err = r.ensureTerraformProviderMetadata(crd); err != nil {
+		return reconcileLogError(log, fmt.Errorf("Error adding terraform provider metadata: %s", err))
 	}
 
 	if deleting {
@@ -225,7 +240,7 @@ func (r *TerraformReconciler) removeFinalizerAndSave(ctx context.Context, log lo
 }
 
 func (r *TerraformReconciler) getTerraformStateValue(resource *unstructured.Unstructured, schema providers.Schema) (*cty.Value, error) {
-	tfStateString, gotTfState, err := unstructured.NestedString(resource.Object, "status", "_tfoperator", "tfState")
+	tfStateString, gotTfState, err := unstructured.NestedString(resource.Object, crdStatusKeyName, crdStatusTerraformOperatorKeyName, crdStatusTerraformStateKeyName)
 	if err != nil {
 		return nil, err
 	}
@@ -266,30 +281,57 @@ func (r *TerraformReconciler) saveTerraformStateValue(ctx context.Context, resou
 		log.Println("Warning, did not encrypt state")
 	}
 
-	err = unstructured.SetNestedField(resource.Object, stateString, "status", "_tfoperator", "tfState")
+	err = unstructured.SetNestedField(resource.Object, stateString, crdStatusKeyName, crdStatusTerraformOperatorKeyName, crdStatusTerraformStateKeyName)
 	if err != nil {
-		return fmt.Errorf("Error setting tfState property: %s", err)
+		return fmt.Errorf("Error setting %s property: %s", crdStatusTerraformStateKeyName, err)
 	}
 
 	if err := r.client.Status().Patch(ctx, resource, client.MergeFrom(copyResource)); err != nil {
-		return fmt.Errorf("Error saving tfState: %s", err)
+		return fmt.Errorf("Error saving %s: %s", crdStatusTerraformStateKeyName, err)
+	}
+	return nil
+}
+
+func (r *TerraformReconciler) ensureTerraformProviderMetadata(resource *unstructured.Unstructured) error {
+	if err := r.ensureTerraformProviderMetadataValue(resource, crdStatusProviderNameKeyName, r.provider.Metadata.Name); err != nil {
+		return err
+	}
+	if err := r.ensureTerraformProviderMetadataValue(resource, crdStatusProviderVersionKeyName, r.provider.Metadata.Version); err != nil {
+		return err
+	}
+	if err := r.ensureTerraformProviderMetadataValue(resource, crdStatusProviderChecksumSHA256KeyName, r.provider.Metadata.ChecksumSHA256); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *TerraformReconciler) ensureTerraformProviderMetadataValue(resource *unstructured.Unstructured, key, value string) error {
+	_, got, err := unstructured.NestedString(resource.Object, crdStatusKeyName, crdStatusTerraformOperatorKeyName, key)
+	if err != nil {
+		return fmt.Errorf("Error getting %s field: %s", key, err)
+	}
+	if !got {
+		err := unstructured.SetNestedField(resource.Object, value, crdStatusKeyName, crdStatusTerraformOperatorKeyName, key)
+		if err != nil {
+			return fmt.Errorf("Error setting %s property: %s", key, err)
+		}
 	}
 	return nil
 }
 
 func (r *TerraformReconciler) setLastAppliedGeneration(resource *unstructured.Unstructured) error {
 	gen := resource.GetGeneration()
-	err := unstructured.SetNestedField(resource.Object, strconv.FormatInt(gen, 10), "status", "_tfoperator", "lastAppliedGeneration")
+	err := unstructured.SetNestedField(resource.Object, strconv.FormatInt(gen, 10), crdStatusKeyName, crdStatusTerraformOperatorKeyName, crdStatusLastAppliedGenerationKeyName)
 	if err != nil {
-		return fmt.Errorf("Error setting lastAppliedGeneration property: %s", err)
+		return fmt.Errorf("Error setting %s property: %s", crdStatusLastAppliedGenerationKeyName, err)
 	}
 	return nil
 }
 
 func (r *TerraformReconciler) getProvisioningState(resource *unstructured.Unstructured) (string, error) {
-	val, gotVal, err := unstructured.NestedString(resource.Object, "status", "_tfoperator", "provisioningState")
+	val, gotVal, err := unstructured.NestedString(resource.Object, crdStatusKeyName, crdStatusTerraformOperatorKeyName, crdStatusProvisioningStateKeyName)
 	if err != nil {
-		return "", fmt.Errorf("Error setting provisioningState property: %s", err)
+		return "", fmt.Errorf("Error setting %s property: %s", crdStatusProvisioningStateKeyName, err)
 	}
 	if !gotVal {
 		val = ""
@@ -298,9 +340,9 @@ func (r *TerraformReconciler) getProvisioningState(resource *unstructured.Unstru
 }
 
 func (r *TerraformReconciler) setProvisioningState(resource *unstructured.Unstructured, state string) error {
-	err := unstructured.SetNestedField(resource.Object, state, "status", "_tfoperator", "provisioningState")
+	err := unstructured.SetNestedField(resource.Object, state, crdStatusKeyName, crdStatusTerraformOperatorKeyName, crdStatusProvisioningStateKeyName)
 	if err != nil {
-		return fmt.Errorf("Error setting provisioningState property: %s", err)
+		return fmt.Errorf("Error setting %s property: %s", crdStatusProvisioningStateKeyName, err)
 	}
 	return nil
 }
@@ -855,7 +897,7 @@ func (r *TerraformReconciler) getCRDValueFromTerraformValue(key string, value *c
 
 // mapTerraformValuesToCRDStatus maps terraform values into an unstructed CRD structure that respects the CRD's OpenAPI status schema
 func (r *TerraformReconciler) mapTerraformValuesToCRDStatus(schema providers.Schema, value *cty.Value, crd *unstructured.Unstructured) error {
-	status, gotStatus, err := unstructured.NestedMap(crd.Object, "status")
+	status, gotStatus, err := unstructured.NestedMap(crd.Object, crdStatusKeyName)
 	if err != nil {
 		return fmt.Errorf("Error getting status field: %s", err)
 	}
@@ -875,7 +917,7 @@ func (r *TerraformReconciler) mapTerraformValuesToCRDStatus(schema providers.Sch
 		status[k] = val
 	}
 
-	err = unstructured.SetNestedMap(crd.Object, status, "status")
+	err = unstructured.SetNestedMap(crd.Object, status, crdStatusKeyName)
 	if err != nil {
 		return fmt.Errorf("Error setting status field: %s", err)
 	}
@@ -884,7 +926,7 @@ func (r *TerraformReconciler) mapTerraformValuesToCRDStatus(schema providers.Sch
 }
 
 func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty.Value, state *cty.Value) (*cty.Value, error) {
-	planResponse := r.provider.PlanResourceChange(providers.PlanResourceChangeRequest{
+	planResponse := r.provider.Plugin.PlanResourceChange(providers.PlanResourceChangeRequest{
 		TypeName:         resourceName,
 		PriorState:       *state, // State after last apply or empty if non-existent
 		ProposedNewState: config, // Config from CRD representing desired state
@@ -896,7 +938,7 @@ func (r *TerraformReconciler) planAndApplyConfig(resourceName string, config cty
 		return nil, fmt.Errorf("Failed in Terraform Plan: %s", err)
 	}
 
-	applyResponse := r.provider.ApplyResourceChange(providers.ApplyResourceChangeRequest{
+	applyResponse := r.provider.Plugin.ApplyResourceChange(providers.ApplyResourceChangeRequest{
 		TypeName:     resourceName,              // Working theory:
 		PriorState:   *state,                    // This is the state from the .tfstate file before the apply is made
 		Config:       config,                    // The current HCL configuration or what would be in your terraform file

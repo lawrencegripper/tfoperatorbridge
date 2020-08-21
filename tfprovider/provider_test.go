@@ -58,12 +58,12 @@ func Test_PrepareProviderConfigWithDefaults_expectNoError(t *testing.T) {
 					panic(err)
 				}
 			}
-			provider, err := getInstanceOfProvider(tt.name, providerInstallPath)
+			provider, err := getInstanceOfProvider(tt.name, providerInstallPath, "")
 			if err != nil {
 				t.Errorf("failed to get instance of provider. error = %v", err)
 			}
 
-			_, err = createEmptyProviderConfWithDefaults(provider, tt.configBody)
+			_, err = createEmptyProviderConfWithDefaults(provider.Plugin, tt.configBody)
 			if err != nil {
 				t.Errorf("failed to configure provider with defaults. error = %v", err)
 				return
@@ -164,7 +164,7 @@ func TestSetupProvider(t *testing.T) {
 
 			if err != nil && tt.wantErr == false {
 				// If we're expecting a valid provider try and use it to check it's working
-				schemaResult := got.GetSchema()
+				schemaResult := got.Plugin.GetSchema()
 				if len(schemaResult.Diagnostics) > 0 {
 					t.Errorf("failed to get schema from provider")
 				}

@@ -2,7 +2,10 @@ package tfprovider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path"
@@ -30,46 +33,54 @@ const (
 	tfVersion         = "0.12.29"
 )
 
-// SetupProvider will return an instance of the TF Provider.
-// It will download [optional] and configure the provider before returning it.
-func SetupProvider(log logr.Logger) (*plugin.GRPCProvider, error) {
+// TerraformProvider represents a terraform provider install
+type TerraformProvider struct {
+	Plugin   *plugin.GRPCProvider
+	Metadata *TerraformProviderMetadata
+}
+
+// TerraformProviderMetadata defines metadata about the terraform provider
+type TerraformProviderMetadata struct {
+	Name           string
+	Version        string
+	ChecksumSHA256 string
+}
+
+// SetupProvider will return an instance of the TF provider.
+// If the TF_PROVIDER_PATH env var is set and a Terraform provider exists at
+// that location, this provider will be used. This is the recommended approach of production.
+// If the TF_PROVIDER_PATH env var is not set, we will download and initialize the
+// provider using Hashicorp's Terraform Registry. This relies on internet access.
+func SetupProvider(log logr.Logger) (*TerraformProvider, error) {
 	providerName := os.Getenv(providerNameEnv)
 	if providerName == "" {
 		return nil, fmt.Errorf("Env %q not set and is required", providerNameEnv)
 	}
-	pathFromEnv := os.Getenv(providerPathEnv)
 
-	var providerInstance *plugin.GRPCProvider
 	var err error
-
-	// Best route for serious use cases is to setup the provider binary as a volume mounted
-	// into the container.
-	if pathFromEnv != "" {
-		log.Info("Getting provider instance using path")
-		providerInstance, err = getInstanceOfProvider(providerName, pathFromEnv)
-		if err != nil {
-			return nil, fmt.Errorf("failed getting provider instance %w", err)
-		}
-	} else {
-		// If only the provider name and version are provided we'll install TF and use
-		// `terraform init` to install the provider from hashicorp registry
+	var providerVersion string
+	providerPath := os.Getenv(providerPathEnv)
+	if providerPath == "" {
 		log.Info("Downloading provider binary")
-		versionFromEnv := os.Getenv(providerVerionEnv)
-		if versionFromEnv == "" {
+		providerVersion = os.Getenv(providerVerionEnv)
+		if providerVersion == "" {
 			return nil, fmt.Errorf("Env %q not set and is required when path to provider binary isn't set with %q", providerVerionEnv, providerPathEnv)
 		}
-		path, err := installProvider(providerName, versionFromEnv)
+		providerPath, err = installProvider(providerName, providerVersion)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to setup provider as provider install failed: %w", err)
 		}
-
-		providerInstance, err = getInstanceOfProvider(providerName, path)
-		if err != nil {
-			return nil, fmt.Errorf("failed getting provider instance %w", err)
-		}
+	}
+	providerInstance, err := getInstanceOfProvider(providerName, providerPath, providerVersion)
+	if err != nil {
+		return nil, fmt.Errorf("failed getting provider instance %w", err)
+	}
+	err = configureProvider(log, providerInstance.Plugin)
+	if err != nil {
+		return nil, err
 	}
 
-	return configureProvider(log, providerInstance)
+	return providerInstance, nil
 }
 
 func installProvider(name string, version string) (string, error) {
@@ -112,13 +123,28 @@ func installProvider(name string, version string) (string, error) {
 	return path.Join(workingDir, "/.terraform/plugins/linux_amd64/"), nil
 }
 
-func getInstanceOfProvider(providerName string, path string) (*plugin.GRPCProvider, error) {
-	pluginMeta := discovery.FindPlugins(plugin.ProviderPluginName, []string{path}).WithName(providerName)
+func getSHA256Checksum(path string) (string, error) {
+	hash := sha256.New()
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close() //nolint: errcheck
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", err
+	}
+	checksum := hex.EncodeToString(hash.Sum(nil))
+	return checksum, nil
+}
+
+func getInstanceOfProvider(name, path, version string) (*TerraformProvider, error) {
+	pluginMeta := discovery.FindPlugins(plugin.ProviderPluginName, []string{path}).WithName(name)
 
 	if pluginMeta.Count() < 1 {
-		return nil, fmt.Errorf("Provide:%q not found at path:%q", providerName, path)
+		return nil, fmt.Errorf("Provide:%q not found at path:%q", name, path)
 	}
-	clientConfig := plugin.ClientConfig(pluginMeta.Newest())
+	versionedPlugin := pluginMeta.Newest()
+	clientConfig := plugin.ClientConfig(versionedPlugin)
 
 	// Don't log provider details unless provider log is enabled by env
 	if _, exists := os.LookupEnv("ENABLE_PROVIDER_LOG"); !exists {
@@ -127,16 +153,32 @@ func getInstanceOfProvider(providerName string, path string) (*plugin.GRPCProvid
 	pluginClient := goplugin.NewClient(clientConfig)
 
 	rpcClient, err := pluginClient.Client()
-
 	if err != nil {
 		return nil, fmt.Errorf("Failed to initialize plugin: %w", err)
 	}
+
 	// create a new resource provisioner.
 	raw, err := rpcClient.Dispense(plugin.ProviderPluginName)
 	if err != nil {
 		panic(fmt.Errorf("Failed to dispense plugin: %s", err))
 	}
-	return raw.(*plugin.GRPCProvider), nil
+
+	ver, err := versionedPlugin.Version.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse provider version %w", err)
+	}
+	checksumSHA256, err := getSHA256Checksum(versionedPlugin.Path)
+	if err != nil {
+		return nil, err
+	}
+	return &TerraformProvider{
+		Plugin: raw.(*plugin.GRPCProvider),
+		Metadata: &TerraformProviderMetadata{
+			Name:           versionedPlugin.Name,
+			Version:        ver.String(),
+			ChecksumSHA256: checksumSHA256,
+		},
+	}, nil
 }
 
 func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBody string) (*cty.Value, error) {
@@ -177,10 +219,10 @@ func createEmptyProviderConfWithDefaults(provider *plugin.GRPCProvider, configBo
 	return &configFull, nil
 }
 
-func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) (*plugin.GRPCProvider, error) {
+func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) error {
 	configWithDefaults, err := createEmptyProviderConfWithDefaults(provider, "")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	// Now we have a prepared config we can configure the provider.
 	// Warning (again): Diagnostics houses errors, the typical go err pattern isn't followed - must check `resp.Diagnostics.Err()`
@@ -189,8 +231,8 @@ func configureProvider(log logr.Logger, provider *plugin.GRPCProvider) (*plugin.
 	})
 	if err := configureProviderResp.Diagnostics.Err(); err != nil {
 		log.Error(err, fmt.Sprintf("Failed to configure provider: %s", err))
-		return nil, err
+		return err
 	}
 
-	return provider, nil
+	return nil
 }
