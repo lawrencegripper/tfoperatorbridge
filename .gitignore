@@ -39,3 +39,4 @@ __debug_bin
 
 run.pid
 /certs
+scripts/webhook-configuration.yaml

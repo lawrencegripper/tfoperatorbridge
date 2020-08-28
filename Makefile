@@ -66,6 +66,14 @@ clear-stor:
 	-kubectl delete -f ./examples/storageAccount.yaml
 	-az storage account delete --name test14tfbop --yes
 
+test-validation:
+	curl -k POST https://localhost/validate-tf-crd -d @./hack/testwebhookrequest.json -H "Content-Type: application/json"
+
+test-webhook:
+	rm -r ./certs
+	./scripts/gen-certs.sh
+	./scripts/deploy-webhook.sh
+
 devcontainer:
 	@echo "Building devcontainer using tag: $(DEV_CONTAINER_TAG)"
 	docker build -f .devcontainer/Dockerfile -t $(DEV_CONTAINER_TAG) ./.devcontainer 
