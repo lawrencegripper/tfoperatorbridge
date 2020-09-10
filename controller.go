@@ -155,8 +155,8 @@ func setupControllerRuntime(provider *tfprovider.TerraformProvider, resources []
 // tfCRDValidator validates Pods
 type tfCRDValidator struct {
 	Client        client.Client
-	decoder       *admission.Decoder
 	tfReconcilers map[string]*TerraformReconciler
+	decoder       *admission.Decoder //nolint
 }
 
 // podValidator admits a pod iff a specific annotation exists.
@@ -186,7 +186,7 @@ func (v *tfCRDValidator) Handle(ctx context.Context, req admission.Request) admi
 	}
 	if terraformConfig == nil {
 		// unable to retrieve referenced values - retry later
-		admission.Errored(http.StatusBadRequest, fmt.Errorf("Unable to apply spec: %s", statusMessage))
+		return admission.Errored(http.StatusBadRequest, fmt.Errorf("Unable to apply spec: %s", statusMessage))
 	}
 
 	valResp := r.provider.Plugin.ValidateResourceTypeConfig(providers.ValidateResourceTypeConfigRequest{

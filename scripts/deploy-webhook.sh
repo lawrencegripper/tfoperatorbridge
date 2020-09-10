@@ -1,5 +1,5 @@
 #! /bin/bash
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit
 
 # Todo: Inject ip address of host
 
@@ -17,7 +17,7 @@ webhooks:
     resources:   ["*"]
     scope:       "Namespaced"
   clientConfig:
-    caBundle: $(cat ./../certs/ca.crt | base64 | tr -d '\n')
+    caBundle: $(base64 ./../certs/ca.crt | tr -d '\n')
     url: "https://10.0.1.13/validate-tf-crd"
   admissionReviewVersions: ["v1beta1"]
   sideEffects: None
