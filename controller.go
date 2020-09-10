@@ -169,7 +169,7 @@ func (v *tfCRDValidator) Handle(ctx context.Context, req admission.Request) admi
 
 	r := v.tfReconcilers[resource.GetObjectKind().GroupVersionKind().String()]
 	resourceName := "azurerm_" + strings.Replace(resource.GetKind(), "-", "_", -1)
-	schema := r.provider.GetSchema().ResourceTypes[resourceName]
+	schema := r.provider.Plugin.GetSchema().ResourceTypes[resourceName]
 
 	spec, gotSpec, err := unstructured.NestedMap(resource.Object, "spec")
 	if err != nil {
@@ -189,7 +189,7 @@ func (v *tfCRDValidator) Handle(ctx context.Context, req admission.Request) admi
 		admission.Errored(http.StatusBadRequest, fmt.Errorf("Unable to apply spec: %s", statusMessage))
 	}
 
-	valResp := r.provider.ValidateResourceTypeConfig(providers.ValidateResourceTypeConfigRequest{
+	valResp := r.provider.Plugin.ValidateResourceTypeConfig(providers.ValidateResourceTypeConfigRequest{
 		TypeName: resourceName,
 		Config:   *terraformConfig,
 	})
