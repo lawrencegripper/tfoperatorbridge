@@ -69,10 +69,15 @@ clear-stor:
 test-validation:
 	curl -k POST https://localhost/validate-tf-crd -d @./hack/testwebhookrequest.json -H "Content-Type: application/json"
 
-test-webhook:
+# This deploys the webhook into the current cluster
+deploy-webhook:
 	rm -r ./certs
 	./scripts/gen-certs.sh
 	./scripts/deploy-webhook.sh
+
+hack-testwebhook:
+	curl -k -d @./hack/req-create-valid.json -H 'Content-Type: application/json' https://localhost/validate-tf-crd
+	curl -k -d @./hack/req-create-invalid.json -H 'Content-Type: application/json' https://localhost/validate-tf-crd
 
 devcontainer:
 	@echo "Building devcontainer using tag: $(DEV_CONTAINER_TAG)"

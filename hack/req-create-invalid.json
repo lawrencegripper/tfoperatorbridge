@@ -1,0 +1,83 @@
+{
+    "apiVersion": "admission.k8s.io/v1beta1",
+    "kind": "AdmissionReview",
+    "request": {
+        "uid": "8d116e45-c52b-45a6-b136-e42622579a3c",
+        "kind": {
+            "group": "azurerm.tfb.local",
+            "version": "valpha1",
+            "kind": "resource-group"
+        },
+        "resource": {
+            "group": "azurerm.tfb.local",
+            "version": "valpha1",
+            "resource": "resource-groups"
+        },
+        "requestKind": {
+            "group": "azurerm.tfb.local",
+            "version": "valpha1",
+            "kind": "resource-group"
+        },
+        "requestResource": {
+            "group": "azurerm.tfb.local",
+            "version": "valpha1",
+            "resource": "resource-groups"
+        },
+        "name": "test2rg",
+        "namespace": "default",
+        "operation": "CREATE",
+        "userInfo": {
+            "username": "kubernetes-admin",
+            "groups": [
+                "system:masters",
+                "system:authenticated"
+            ]
+        },
+        "object": {
+            "apiVersion": "azurerm.tfb.local/valpha1",
+            "kind": "resource-group",
+            "metadata": {
+                "annotations": {
+                    "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"azurerm.tfb.local/valpha1\",\"kind\":\"resource-group\",\"metadata\":{\"annotations\":{},\"name\":\"test2rg\",\"namespace\":\"default\"},\"spec\":{\"location\":\"northEurope\",\"name\":\"test2\"}}\n"
+                },
+                "creationTimestamp": "2020-09-10T06:52:42Z",
+                "generation": 1,
+                "managedFields": [
+                    {
+                        "apiVersion": "azurerm.tfb.local/valpha1",
+                        "fieldsType": "FieldsV1",
+                        "fieldsV1": {
+                            "f:metadata": {
+                                "f:annotations": {
+                                    ".": {},
+                                    "f:kubectl.kubernetes.io/last-applied-configuration": {}
+                                }
+                            },
+                            "f:spec": {
+                                ".": {},
+                                "f:location": {},
+                                "f:name": {}
+                            }
+                        },
+                        "manager": "kubectl",
+                        "operation": "Update",
+                        "time": "2020-09-10T06:52:42Z"
+                    }
+                ],
+                "name": "test-2",
+                "namespace": "default",
+                "uid": "7f2b02fe-5a95-4ddc-86e9-6f3390899fb9"
+            },
+            "spec": {
+                "location": "northEurope",
+                "name": "test2rg-invalid-name-for-rg!!."
+            }
+        },
+        "oldObject": null,
+        "dryRun": false,
+        "options": {
+            "kind": "CreateOptions",
+            "apiVersion": "meta.k8s.io/v1"
+        }
+    }
+}
