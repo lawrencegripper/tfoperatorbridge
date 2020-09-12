@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	openapi_spec "github.com/go-openapi/spec"
+	"github.com/hashicorp/terraform/providers"
 	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -19,6 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 var (
@@ -102,18 +107,21 @@ func setupControllerRuntime(provider *tfprovider.TerraformProvider, resources []
 		opts = append(opts, WithAesEncryption(encryptionKey))
 	}
 
+	gvkToReconcilerMap := make(map[string]*TerraformReconciler)
+
 	for i, gv := range resources {
 		groupVersionKind := gv.GroupVersionKind
 		setupLog.Info("Enabling controller for resource", "kind", gv.GroupVersionKind.Kind)
 		client := mgr.GetClient()
 		schema := schemas[i] // TODO: Assumes schema and resources have the same index, make more reboust
+		reconciler := NewTerraformReconciler(provider, client, schema, opts...)
 		err = ctrl.NewControllerManagedBy(mgr).
 			// Note: Generation Changed Predicate means controller only called when an update is made to spec
 			// or other case causing generation to change
 			For(runtimeObjFromGVK(gv.GroupVersionKind), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 			Complete(&controller{
 				Client:       client,
-				tfReconciler: NewTerraformReconciler(provider, client, schema, opts...),
+				tfReconciler: reconciler,
 				scheme:       mgr.GetScheme(),
 				gvk:          &groupVersionKind,
 			})
@@ -121,6 +129,7 @@ func setupControllerRuntime(provider *tfprovider.TerraformProvider, resources []
 			setupLog.Error(err, "unable to create controller", "kind", gv.GroupVersionKind.Kind)
 			os.Exit(1)
 		}
+		gvkToReconcilerMap[gv.GroupVersionKind.String()] = reconciler
 	}
 
 	// Todo: Enable webhooks in future
@@ -132,9 +141,62 @@ func setupControllerRuntime(provider *tfprovider.TerraformProvider, resources []
 	// 	os.Exit(1)
 	// }
 
+	hookServer := mgr.GetWebhookServer()
+	hookServer.CertDir = "./certs"
+	hookServer.Register("/validate-tf-crd", &webhook.Admission{Handler: &tfCRDValidator{tfReconcilers: gvkToReconcilerMap}})
+
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// tfCRDValidator validates Pods
+type tfCRDValidator struct {
+	Client        client.Client
+	tfReconcilers map[string]*TerraformReconciler
+	decoder       *admission.Decoder //nolint
+}
+
+// podValidator admits a pod iff a specific annotation exists.
+func (v *tfCRDValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
+	resource := unstructured.Unstructured{}
+	err := resource.UnmarshalJSON(req.Object.Raw)
+	if err != nil {
+		panic(err)
+	}
+
+	r := v.tfReconcilers[resource.GetObjectKind().GroupVersionKind().String()]
+	resourceName := "azurerm_" + strings.Replace(resource.GetKind(), "-", "_", -1)
+	schema := r.provider.Plugin.GetSchema().ResourceTypes[resourceName]
+
+	spec, gotSpec, err := unstructured.NestedMap(resource.Object, "spec")
+	if err != nil {
+		return admission.Errored(http.StatusBadRequest, fmt.Errorf("Error retrieving CRD spec: %s", err))
+	}
+	if !gotSpec {
+		return admission.Errored(http.StatusBadRequest, fmt.Errorf("Error - CRD spec not found"))
+	}
+
+	terraformConfig := r.createEmptyTerraformValueForBlock(schema.Block, "test1")
+	terraformConfig, statusMessage, err := r.mapCRDSpecValuesToTerraformConfig(ctx, schema.Block, terraformConfig, spec)
+	if err != nil {
+		return admission.Errored(http.StatusBadRequest, fmt.Errorf("Error applying values from the CRD spec to Terraform config: %s", err))
+	}
+	if terraformConfig == nil {
+		// unable to retrieve referenced values - retry later
+		return admission.Errored(http.StatusBadRequest, fmt.Errorf("Unable to apply spec: %s", statusMessage))
+	}
+
+	valResp := r.provider.Plugin.ValidateResourceTypeConfig(providers.ValidateResourceTypeConfigRequest{
+		TypeName: resourceName,
+		Config:   *terraformConfig,
+	})
+
+	if valResp.Diagnostics.HasErrors() {
+		return admission.Errored(http.StatusBadRequest, fmt.Errorf("Invalid CRD configuration: %w", valResp.Diagnostics.Err()))
+	}
+
+	return admission.Allowed("")
 }

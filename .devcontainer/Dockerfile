@@ -106,3 +106,9 @@ RUN \
     curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.18.0/bin/linux/amd64/kubectl \
     && chmod +x ./kubectl \
     && mv ./kubectl /usr/local/bin/kubectl
+
+# Install Ngrok
+RUN \
+    curl -LO https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip \
+    && unzip ./ngrok-stable-linux-amd64.zip \
+    && mv ngrok /usr/local/bin
