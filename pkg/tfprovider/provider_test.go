@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	providerInstallPath = "../hack/.terraform/plugins/linux_amd64/"
+	providerInstallPath = "../../hack/.terraform/plugins/linux_amd64/"
 )
 
 type providerTestDef struct {

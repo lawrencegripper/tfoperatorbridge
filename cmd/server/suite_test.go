@@ -1,4 +1,4 @@
-package main_test
+package main
 
 import (
 	"fmt"
@@ -9,8 +9,10 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2019-05-01/resources"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure/auth"
+	"github.com/lawrencegripper/tfoperatorbridge/pkg/k8s"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
@@ -25,7 +27,18 @@ func TestTfOperatorBridge(t *testing.T) {
 	RunSpecs(t, "Workspace Suite")
 }
 
+// Setup K8s and Azure Clients
 var _ = BeforeSuite(func() {
+	// Start the operator
+	log := ctrl.Log.WithName("testsuite")
+	provider, schemas, resources := setupCRDs(log)
+
+	go func() {
+		// Start an informer to watch for crd items
+		k8s.StartControllerRuntime(provider, resources, schemas)
+		panic("Controller exited")
+	}()
+
 	var err error
 	// K8sClient used for kubernetes
 	k8sClient, err = configureK8sClient()

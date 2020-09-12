@@ -38,5 +38,6 @@ __debug_bin
 .env
 
 run.pid
-/certs
+/cmd/server/certs
 scripts/webhook-configuration.yaml
+/server

@@ -5,14 +5,16 @@ include .env
 export
 
 build: lint
-	go build .
+	go build ./cmd/server
 
-run: kind-create terraform-hack-init
-	./scripts/gen-certs.sh
+run: kind-create terraform-hack-init gen-certs
 	# Stop any previously running instance of the operator
 	$(shell [ -f run.pid ] && cat run.pid | xargs kill)
 	# Store the pid of the running instance in run.pid file
-	go run . & echo "$$$$" > run.pid
+	go run ./cmd/server & echo "$$$$" > run.pid
+
+gen-certs:
+	./scripts/gen-certs.sh
 
 kind-create:
 	@echo "Create cluster if doesn't exist"
@@ -30,8 +32,7 @@ terraform-hack-init:
 
 # Note: The integration tests run a set of scenarios with the azurerm provider
 #       these create resources in the azure account specified.
-integration-tests: run
-	./scripts/wait-for-bridge.sh
+integration-tests: kind-create terraform-hack-init gen-certs
 	go test -v ./...
 
 lint: lint-go lint-shell

@@ -1,4 +1,4 @@
-package main
+package k8s
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	openapi_spec "github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
 	terraform_schema "github.com/hashicorp/terraform/configs/configschema"
-	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
+	"github.com/lawrencegripper/tfoperatorbridge/pkg/tfprovider"
 	"github.com/zclconf/go-cty/cty"
 
 	k8s_apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
@@ -21,6 +21,7 @@ import (
 	k8s_metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8s_schema "k8s.io/apimachinery/pkg/runtime/schema"
 	k8s_wait "k8s.io/apimachinery/pkg/util/wait"
+	k8s_rest "k8s.io/client-go/rest"
 )
 
 const (
@@ -28,7 +29,9 @@ const (
 	openAPIArrayType  = "array"
 )
 
-func createK8sCRDsFromTerraformProvider(terraformProvider *tfprovider.TerraformProvider) ([]GroupVersionFull, []openapi_spec.Schema, error) {
+// CreateK8sCRDsFromTerraformProvider generates the OpenAPI Spec for resoures in the
+// provider and adds these as CRD definitions in K8s
+func CreateK8sCRDsFromTerraformProvider(k8sclient *k8s_rest.Config, terraformProvider *tfprovider.TerraformProvider) ([]GroupVersionFull, []openapi_spec.Schema, error) {
 	// Status: This runs but very little validation of the outputted openAPI apecs has been done. Bugs are likely
 
 	terraformProviderSchema := terraformProvider.Plugin.GetSchema()
@@ -89,7 +92,7 @@ func createK8sCRDsFromTerraformProvider(terraformProvider *tfprovider.TerraformP
 	}
 
 	// Install all of the resources as CRDs into the cluster
-	gvrArray := installOpenAPISchemasAsK8sCRDs(openAPIResourceSchemas, "azurerm", fmt.Sprintf("v%v", "alpha1"))
+	gvrArray := installOpenAPISchemasAsK8sCRDs(k8sclient, openAPIResourceSchemas, "azurerm", fmt.Sprintf("v%v", "alpha1"))
 
 	fmt.Printf("Creating CRDs - Done")
 
@@ -255,8 +258,7 @@ type GroupVersionFull struct {
 }
 
 // k8s stuff
-func installOpenAPISchemasAsK8sCRDs(openAPIResources []openapi_spec.Schema, terraformProviderName, terraformProviderVersion string) []GroupVersionFull {
-	clientConfig := getK8sClientConfig()
+func installOpenAPISchemasAsK8sCRDs(clientConfig *k8s_rest.Config, openAPIResources []openapi_spec.Schema, terraformProviderName, terraformProviderVersion string) []GroupVersionFull {
 	// Tracks all CRDs Installed or preexisting generated from the TF Schema
 	gvArray := make([]GroupVersionFull, 0, len(openAPIResources))
 	// Tracks only CRDS newly installed in this run

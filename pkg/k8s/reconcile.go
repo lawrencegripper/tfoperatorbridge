@@ -1,4 +1,4 @@
-package main
+package k8s
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	openapi_spec "github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/configs/configschema"
 	"github.com/hashicorp/terraform/providers"
-	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
+	"github.com/lawrencegripper/tfoperatorbridge/pkg/tfprovider"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"

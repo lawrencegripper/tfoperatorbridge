@@ -10,8 +10,8 @@ fi
 
 set -e
 
-mkdir -p ../certs
-cd ../certs
+mkdir -p ../cmd/server/certs
+cd ../cmd/server/certs
 
 openssl genrsa -out ca.key 2048
 openssl req -x509 -new -nodes -key ca.key -days 100000 -out ca.crt -subj "/CN=admission_ca"
