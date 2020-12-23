@@ -1,4 +1,4 @@
-DEV_CONTAINER_TAG:=devcontainer
+DEV_CONTAINER_TAG:=lawrencegripper/tfoperatorbridgedevcontainer:latest
 
 # Load the environment variables. If this errors review the README.MD and create a .env file as instructed
 include .env
@@ -80,9 +80,20 @@ hack-testwebhook:
 	curl -k -d @./hack/req-create-valid.json -H 'Content-Type: application/json' https://localhost/validate-tf-crd
 	curl -k -d @./hack/req-create-invalid.json -H 'Content-Type: application/json' https://localhost/validate-tf-crd
 
+
+## devcontainer:
+##		Builds the devcontainer used for VSCode and CI
 devcontainer:
 	@echo "Building devcontainer using tag: $(DEV_CONTAINER_TAG)"
-	docker build -f .devcontainer/Dockerfile -t $(DEV_CONTAINER_TAG) ./.devcontainer 
+	# Get cached layers by pulling previous version (leading dash means it's optional, will continue on failure)
+	-docker pull $(DEV_CONTAINER_TAG)
+	# Build the devcontainer: Hide output if it builds to keep things clean
+	docker build -f ./.devcontainer/Dockerfile ./.devcontainer --cache-from $(DEV_CONTAINER_TAG) -t $(DEV_CONTAINER_TAG) --build-arg BUILDKIT_INLINE_CACHE=1
+
+## devcontainer-push:
+##		Pushes the devcontainer image for caching to speed up builds
+devcontainer-push: devcontainer
+	docker push $(DEV_CONTAINER_TAG)
 
 devcontainer-ci:
 ifdef DEVCONTAINER
