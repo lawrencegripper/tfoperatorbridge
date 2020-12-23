@@ -110,7 +110,7 @@ endif
 		-e PROVIDER_CONFIG_HCL="features {}" \
 		-e TF_STATE_ENCRYPTION_KEY="$(TF_STATE_ENCRYPTION_KEY)" \
 		-e TF_PROVIDER_NAME=azurerm \
-		-e TF_PROVIDER_PATH="./hack/.terraform/plugins/linux_amd64/" \
+		-e TF_PROVIDER_PATH="./../../hack/.terraform/plugins/linux_amd64/" \
 		--privileged \
 		--device /dev/fuse \
 		--network=host \
