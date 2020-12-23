@@ -1,4 +1,4 @@
-package main
+package k8s
 
 import (
 	"context"
@@ -10,11 +10,13 @@ import (
 
 	openapi_spec "github.com/go-openapi/spec"
 	"github.com/hashicorp/terraform/providers"
-	"github.com/lawrencegripper/tfoperatorbridge/tfprovider"
+	"github.com/lawrencegripper/tfoperatorbridge/pkg/tfprovider"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	// Todo: Is this really required?
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	ctrl "sigs.k8s.io/controller-runtime"
 	api "sigs.k8s.io/controller-runtime/examples/crd/pkg"
@@ -86,7 +88,8 @@ func runtimeObjFromGVK(r schema.GroupVersionKind) runtime.Object {
 	return obj
 }
 
-func setupControllerRuntime(provider *tfprovider.TerraformProvider, resources []GroupVersionFull, schemas []openapi_spec.Schema) {
+// StartControllerRuntime starts the validating webhook and the reconciliation loops
+func StartControllerRuntime(provider *tfprovider.TerraformProvider, resources []GroupVersionFull, schemas []openapi_spec.Schema) {
 	ctrl.SetLogger(zap.Logger(true))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{})

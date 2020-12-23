@@ -1,18 +1,20 @@
-DEV_CONTAINER_TAG:=devcontainer
+DEV_CONTAINER_TAG:=lawrencegripper/tfoperatorbridgedevcontainer:latest
 
 # Load the environment variables. If this errors review the README.MD and create a .env file as instructed
 include .env
 export
 
 build: lint
-	go build .
+	go build ./cmd/server
 
-run: kind-create terraform-hack-init
-	./scripts/gen-certs.sh
+run: kind-create terraform-hack-init gen-certs
 	# Stop any previously running instance of the operator
 	$(shell [ -f run.pid ] && cat run.pid | xargs kill)
 	# Store the pid of the running instance in run.pid file
-	go run . & echo "$$$$" > run.pid
+	go run ./cmd/server & echo "$$$$" > run.pid
+
+gen-certs:
+	./scripts/gen-certs.sh
 
 kind-create:
 	@echo "Create cluster if doesn't exist"
@@ -30,8 +32,7 @@ terraform-hack-init:
 
 # Note: The integration tests run a set of scenarios with the azurerm provider
 #       these create resources in the azure account specified.
-integration-tests: run
-	./scripts/wait-for-bridge.sh
+integration-tests: kind-create terraform-hack-init gen-certs
 	go test -v ./...
 
 lint: lint-go lint-shell
@@ -79,9 +80,20 @@ hack-testwebhook:
 	curl -k -d @./hack/req-create-valid.json -H 'Content-Type: application/json' https://localhost/validate-tf-crd
 	curl -k -d @./hack/req-create-invalid.json -H 'Content-Type: application/json' https://localhost/validate-tf-crd
 
+
+## devcontainer:
+##		Builds the devcontainer used for VSCode and CI
 devcontainer:
 	@echo "Building devcontainer using tag: $(DEV_CONTAINER_TAG)"
-	docker build -f .devcontainer/Dockerfile -t $(DEV_CONTAINER_TAG) ./.devcontainer 
+	# Get cached layers by pulling previous version (leading dash means it's optional, will continue on failure)
+	-docker pull $(DEV_CONTAINER_TAG)
+	# Build the devcontainer: Hide output if it builds to keep things clean
+	docker build -f ./.devcontainer/Dockerfile ./.devcontainer --cache-from $(DEV_CONTAINER_TAG) -t $(DEV_CONTAINER_TAG) --build-arg BUILDKIT_INLINE_CACHE=1
+
+## devcontainer-push:
+##		Pushes the devcontainer image for caching to speed up builds
+devcontainer-push: devcontainer
+	docker push $(DEV_CONTAINER_TAG)
 
 devcontainer-ci:
 ifdef DEVCONTAINER
@@ -98,7 +110,7 @@ endif
 		-e PROVIDER_CONFIG_HCL="features {}" \
 		-e TF_STATE_ENCRYPTION_KEY="$(TF_STATE_ENCRYPTION_KEY)" \
 		-e TF_PROVIDER_NAME=azurerm \
-		-e TF_PROVIDER_PATH="./hack/.terraform/plugins/linux_amd64/" \
+		-e TF_PROVIDER_PATH="./../../hack/.terraform/plugins/linux_amd64/" \
 		--privileged \
 		--device /dev/fuse \
 		--network=host \

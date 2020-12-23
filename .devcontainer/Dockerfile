@@ -1,4 +1,4 @@
-FROM golang:1.14.4-buster
+FROM golang:1.15.6-buster
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -60,7 +60,8 @@ RUN git clone https://github.com/magicmonty/bash-git-prompt.git ~/.bash-git-prom
 ENV DEVCONTAINER="TRUE"
 
 # Install docker used by go releaser
-RUN bash -c "cd /tmp && curl -fsSLO https://download.docker.com/linux/static/stable/x86_64/docker-19.03.5.tgz && tar --strip-components=1 -xvzf docker-19.03.5.tgz -C /usr/local/bin"
+ENV DOCKER_BUILDKIT=1
+RUN bash -c "cd /tmp && curl -fsSLO https://download.docker.com/linux/static/stable/x86_64/docker-20.10.1.tgz && tar --strip-components=1 -xvzf docker-20.10.1.tgz -C /usr/local/bin"
 
 # Install mdspell 
 RUN \
@@ -70,17 +71,15 @@ RUN \
 # Install Go tools
 RUN \
     # --> Delve for debugging
-    go get github.com/go-delve/delve/cmd/dlv@v1.4.1 \
+    go get github.com/go-delve/delve/cmd/dlv@v1.5.1 \
     # --> Go language server
-    && go get golang.org/x/tools/gopls@v0.4.1 \
+    && go get golang.org/x/tools/gopls@v0.6.1 \
     # --> Go symbols and outline for go to symbol support and test support 
     && go get github.com/acroca/go-symbols@v0.1.1 && go get github.com/ramya-rao-a/go-outline@7182a932836a71948db4a81991a494751eccfe77 \
     # --> GolangCI-lint
-    && curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sed 's/tar -/tar --no-same-owner -/g' | sh -s -- -b $(go env GOPATH)/bin \
-    # --> Install Ginkgo
-    && go get github.com/onsi/ginkgo/ginkgo@v1.12.0  \
+    && curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.33.0 \
     # --> Go releaser 
-    && curl -sfL https://install.goreleaser.com/github.com/goreleaser/goreleaser.sh | sh -s -- "v0.132.1"\
+    && curl -sfL https://install.goreleaser.com/github.com/goreleaser/goreleaser.sh | sh -s -- "v0.149.0"\
     # --> Go rich output for testing with colors
     && go get github.com/kyoh86/richgo@v0.3.3 \
     && rm -rf /go/src/ && rm -rf /go/pkg
